@@ -159,7 +159,7 @@ describe('Auction RPCs', function() {
     bid: 5,
     lockup: 10
   };
-  const loserBid ={
+  const loserBid = {
     bid: 4,
     lockup: 10
   };

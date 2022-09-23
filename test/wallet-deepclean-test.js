@@ -214,7 +214,7 @@ describe('Wallet Deep Clean', function() {
 });
 
 function compareHistories(a, b) {
-  for (let i = 0; i < a.length; i ++) {
+  for (let i = 0; i < a.length; i++) {
     const objA = a[i];
     const objB = b[i];
 
@@ -229,7 +229,7 @@ function compareHistories(a, b) {
 }
 
 function compareNames(a, b) {
-  for (let i = 0; i < a.length; i ++) {
+  for (let i = 0; i < a.length; i++) {
     const objA = a[i];
     const objB = b[i];
 

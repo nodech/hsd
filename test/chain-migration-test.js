@@ -953,7 +953,7 @@ describe('Chain Migrations', function() {
       const b = ldb.batch();
       const root = Buffer.alloc(32, 0x01);
       // revert version in DB.
-      writeVersion(b , 'chain', 2);
+      writeVersion(b, 'chain', 2);
       // encode wrong tree state (non default)
       b.put(layout.s.encode(), root);
       b.put(layout.M.encode(), state.encode());

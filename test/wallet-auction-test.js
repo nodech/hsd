@@ -628,7 +628,7 @@ describe('Wallet Auction', function() {
         const wtxs = await wallet.toDetails(txs);
         for (const wtx of wtxs) {
           for (const output of wtx.outputs)
-            if (   output.path
+            if (output.path
                 && output.path.account === 0
                 && output.path.branch === 0  // receive
             ) {

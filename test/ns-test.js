@@ -398,7 +398,7 @@ describe('RootServer DNSSEC', function () {
       'this-domain-name-has-sixty-three-octets-taking-max-label-length.'
     ];
 
-    for(const qname of qnames) {
+    for (const qname of qnames) {
       const res = await resolve(qname, wire.types.NS);
       assert(res.aa);
       assert.strictEqual(res.code, wire.codes.NXDOMAIN);
@@ -484,7 +484,7 @@ describe('RootServer DNSSEC', function () {
     // 2. DS record must be in the answers section
     const qnames = ['proofofconcept.', 'com.'];
 
-    for(const qname of qnames) {
+    for (const qname of qnames) {
       const res = await resolve(qname, wire.types.DS);
       assert(res.aa);
       assert.strictEqual(res.code, wire.codes.NOERROR);
@@ -535,7 +535,7 @@ describe('RootServer DNSSEC', function () {
     // 2. NSEC in authority section
     const qnames = ['nb.', 'cf.'];
 
-    for(const qname of qnames) {
+    for (const qname of qnames) {
       const res = await resolve(qname, wire.types.DS);
       assert(res.aa);
       assert.strictEqual(res.code, wire.codes.NOERROR);

@@ -101,7 +101,7 @@ describe('Wallet Unit Tests', () => {
       }
       {
         // Wallet ids can only be uint32s
-        assert.throws(() => Wallet.fromOptions(wdb, { wid: 2**32 }));
+        assert.throws(() => Wallet.fromOptions(wdb, { wid: 2 ** 32 }));
         assert.throws(() => Wallet.fromOptions(wdb, { wid: -1 }));
       }
     });
@@ -251,7 +251,7 @@ describe('Wallet Unit Tests', () => {
 
       {
         // Account Depth can only be uint32s
-        const overflow = { accountDepth: 2**32 };
+        const overflow = { accountDepth: 2 ** 32 };
         assert.throws(() => Wallet.fromOptions(wdb, overflow));
         const underflow = { accountDepth: -1 };
         assert.throws(() => Wallet.fromOptions(wdb, underflow));
@@ -284,7 +284,7 @@ describe('Wallet Unit Tests', () => {
 
       {
         // Token depth can only be uint32s
-        const overflow = { tokenDepth: 2**32 };
+        const overflow = { tokenDepth: 2 ** 32 };
         assert.throws(() => Wallet.fromOptions(wdb, overflow));
         const underflow = { tokenDepth: -1 };
         assert.throws(() => Wallet.fromOptions(wdb, underflow));

@@ -170,7 +170,7 @@ describe('Auction', function() {
     });
 
     it('should register a name', async () => {
-      const mtx = await winner.createRegister(NAME1, Buffer.from([1,2,3]));
+      const mtx = await winner.createRegister(NAME1, Buffer.from([1, 2, 3]));
 
       assert(mtx.outputs.length > 0);
 
@@ -195,7 +195,7 @@ describe('Auction', function() {
     });
 
     it('should register again and update tree', async () => {
-      const mtx = await winner.createUpdate(NAME1, Buffer.from([1,2,4]));
+      const mtx = await winner.createUpdate(NAME1, Buffer.from([1, 2, 4]));
 
       const job = await cpu.createJob();
       job.addTX(mtx.toTX(), mtx.view);
@@ -455,7 +455,7 @@ describe('Auction', function() {
           assert.strictEqual(block.txs.length, 2);
           count++;
           break;
-        } catch(e) {
+        } catch (e) {
           assert.strictEqual(e.reason, 'bad-finalize-maturity');
 
           // Ok, fine - mine a block without the FINALIZE
@@ -734,7 +734,7 @@ describe('Auction', function() {
     });
 
     it('should register a claimed name', async () => {
-      const mtx = await wallet.createRegister('cloudflare', Buffer.from([1,2]));
+      const mtx = await wallet.createRegister('cloudflare', Buffer.from([1, 2]));
 
       const job = await cpu.createJob();
       job.addTX(mtx.toTX(), mtx.view);
@@ -754,7 +754,7 @@ describe('Auction', function() {
     });
 
     it('should register a claimed name', async () => {
-      const mtx = await wallet.createRegister('af', Buffer.from([1,2,3]));
+      const mtx = await wallet.createRegister('af', Buffer.from([1, 2, 3]));
 
       const job = await cpu.createJob();
       job.addTX(mtx.toTX(), mtx.view);

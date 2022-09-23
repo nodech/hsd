@@ -1,6 +1,6 @@
 'use strict';
 
-const {NodeClient,WalletClient} = require('hs-client');
+const {NodeClient, WalletClient} = require('hs-client');
 const assert = require('bsert');
 const FullNode = require('../lib/node/fullnode');
 const Network = require('../lib/protocol/network');
@@ -216,7 +216,7 @@ describe('Wallet RPC Methods', function() {
 
       // Each address through the lookahead number should
       // be recognized as an owned address
-      for (let i = 0; i < info.lookahead+1; i++) {
+      for (let i = 0; i < info.lookahead + 1; i++) {
         const address = addresses[i];
         const response = await wclient.execute('getaddressinfo', [address]);
         assert.equal(response.ismine, true);
@@ -506,7 +506,7 @@ describe('Wallet RPC Methods', function() {
     it('should fail to sign with invalid name.', async () => {
       await wclient.execute('selectwallet', ['alice']);
 
-      for(const invalidName of invalidNames) {
+      for (const invalidName of invalidNames) {
         await assert.rejects(async () => {
           await wclient.execute('signmessagewithname', [
             invalidName,
@@ -522,7 +522,7 @@ describe('Wallet RPC Methods', function() {
     it('should fail to verify with invalid name.', async () => {
       const signature = 'S+ROcYA6r1xaFq+5cIMnd+O3Db7lzUmkpaR5b/FnwkgrZagroTYHnA+ZTMPRWAiWdVrGPjobXpSx9dZT+G5h6Q==';
 
-      for(const invalidName of invalidNames) {
+      for (const invalidName of invalidNames) {
         await assert.rejects(async () => {
           await nclient.execute('verifymessagewithname', [
             invalidName,

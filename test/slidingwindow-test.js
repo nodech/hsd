@@ -28,7 +28,7 @@ describe('SlidingWindow (Unit)', function() {
   });
 
   it('should process max requests in window', async () => {
-    for (let i=0; i < window.limit-1; i++)
+    for (let i = 0; i < window.limit - 1; i++)
       window.increase(1);
 
     assert.ok(window.allow());
