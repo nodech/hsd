@@ -85,6 +85,9 @@ const phrases = mnemData.map(d => Mnemonic.fromPhrase(d[1]));
 
 const {
   treeInterval
+  // biddingPeriod,
+  // revealPeriod,
+  // transferLockup
 } = network.names;
 
 /**
@@ -108,9 +111,18 @@ const GRIND_NAME_LEN = 10;
 
 // Wallet consts
 const DEFAULT_ACCOUNT = 'default';
+const ALT_ACCOUNT = 'alt';
 
 const INIT_BLOCKS = treeInterval;
 const INIT_FUND = 10e6;
+const NULL_BALANCE = new BalanceObj({
+  tx: 0,
+  coin: 0,
+  unconfirmed: 0,
+  confirmed: 0,
+  ulocked: 0,
+  clocked: 0
+});
 
 const INIT_BALANCE = new BalanceObj({
   tx: 1,
@@ -162,13 +174,13 @@ async function resign(wallet, mtx) {
  * @returns {Promise<BalanceObj>}
  */
 
-async function getBalanceObj(wallet, account) {
-  const balance = await wallet.getBalance(account);
+async function getBalanceObj(wallet, accountName) {
+  const balance = await wallet.getBalance(accountName);
   return BalanceObj.fromBalance(balance.getJSON(true));
 }
 
-async function assertBalance(wallet, account, expected, message) {
-  const balance = await getBalanceObj(wallet, account);
+async function assertBalance(wallet, accountName, expected, message) {
+  const balance = await getBalanceObj(wallet, accountName);
   assert.deepStrictEqual(balance, expected, message);
 }
 
@@ -300,7 +312,7 @@ describe('Wallet Balance', function() {
    */
 
   /**
-   * @callback SetupFunction
+   * @callback BalanceCheckFunction
    * @param {Wallet} wallet
    * @param {Account} account
    * @param {Number} ahead
@@ -309,106 +321,169 @@ describe('Wallet Balance', function() {
 
   /**
    * @typedef {Object} TestBalances
-   * @property {BalanceObj} balances.initialBalance
-   * @property {BalanceObj} balances.receiveBalance
-   * @property {BalanceObj} balances.confirmedBalance
-   * @property {BalanceObj} balances.unconfirmedBalance
-   * @property {BalanceObj} balances.eraseBalance
-   * @property {BalanceObj} balances.blockConfirmBalance
-   * @property {BalanceObj} balances.blockUnconfirmedBalance
-   * @property {BalanceObj} [balances.blockFinalConfirmBalance]
+   * @property {BalanceObj} TestBalances.initialBalance
+   * @property {BalanceObj} TestBalances.sentBalance
+   * @property {BalanceObj} TestBalances.confirmedBalance
+   * @property {BalanceObj} TestBalances.unconfirmedBalance
+   * @property {BalanceObj} TestBalances.eraseBalance
+   * @property {BalanceObj} TestBalances.blockConfirmedBalance
+   * @property {BalanceObj} TestBalances.blockUnconfirmedBalance
+   * @property {BalanceObj} [TestBalances.blockFinalConfirmedBalance]
+   */
+
+  /**
+   * @typedef {Object} CheckFunctions
+   * @property {BalanceCheckFunction} CheckFunctions.initCheck
+   * @property {BalanceCheckFunction} CheckFunctions.sentCheck
+   * @property {BalanceCheckFunction} CheckFunctions.confirmedCheck
+   * @property {BalanceCheckFunction} CheckFunctions.unconfirmedCheck
+   * @property {BalanceCheckFunction} CheckFunctions.eraseCheck
+   * @property {BalanceCheckFunction} CheckFunctions.blockConfirmCheck
+   * @property {BalanceCheckFunction} CheckFunctions.blockUnconfirmCheck
+   * @property {BalanceCheckFunction} CheckFunctions.blockFinalConfirmCheck
    */
 
   /**
    * @callback BalanceTestFunction
-   * @param {TestBalances} balances
+   * @param {CheckFunctions} checks
+   * @param {BalanceCheckFunction} discoverFn
    * @param {DISCOVER_TYPES} discoverAt
    * @param {Object} opts
    */
 
   /**
    * Supports missing address/discoveries at certain points.
-   * @param {SetupFunction} [setupFn]
-   * @param {SetupFunction} receiveFn
+   * @param {BalanceCheckFunction} [setupFn]
+   * @param {BalanceCheckFunction} receiveFn
    * @param {Number} ahead
    * @returns {BalanceTestFunction}
    */
 
   const balanceTest = (setupFn, receiveFn, ahead) => {
-    return async (balances, discoverAt, opts) => {
+    return async (checks, discoverFn, discoverAt, opts = {}) => {
       const {wallet, accountName} = getNextWallet();
       const account = await wallet.getAccount(accountName);
-
-      const {
-        initialBalance,
-        receiveBalance,
-        confirmedBalance,
-        unconfirmedBalance,
-        eraseBalance,
-        blockConfirmBalance,
-        blockUnconfirmedBalance
-      } = balances;
 
       if (setupFn)
         await setupFn(wallet, account, ahead, opts);
 
-      await assertBalance(wallet, accountName, initialBalance,
-        'Initial balance is not correct.');
+      await checks.initCheck(wallet, account, ahead, opts);
 
       await receiveFn(wallet, account, ahead, opts);
-      await assertBalance(wallet, accountName, receiveBalance,
-        'Receive balance is not correct.');
+      await checks.sentCheck(wallet, account, ahead, opts);
 
       if (discoverAt === DISCOVER_TYPES.BEFORE_CONFIRM)
-        await catchUpToAhead(wallet, accountName, ahead);
+        await discoverFn(wallet, account, ahead, opts);
 
       await mineBlocks(1);
-      await assertBalance(wallet, accountName, confirmedBalance,
-        'Confirmed balance is not correct.');
+      await checks.confirmedCheck(wallet, account, ahead, opts);
 
       // now unconfirm
       if (discoverAt === DISCOVER_TYPES.BEFORE_UNCONFIRM)
-        await catchUpToAhead(wallet, accountName, ahead);
+        await discoverFn(wallet, account, ahead, opts);
 
       await wdb.revert(chain.tip.height - 1);
-      await assertBalance(wallet, accountName, unconfirmedBalance,
-        'Unconfirmed balance is not correct.');
+      await checks.unconfirmedCheck(wallet, account, ahead, opts);
 
       // now erase
       if (discoverAt === DISCOVER_TYPES.BEFORE_ERASE)
-        await catchUpToAhead(wallet, accountName, ahead);
+        await discoverFn(wallet, account, ahead, opts);
 
       await wallet.zap(accountName, 0);
-      await assertBalance(wallet, accountName, eraseBalance,
-        'Erase balance is not correct.');
+      await checks.eraseCheck(wallet, account, ahead, opts);
 
       if (discoverAt === DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM)
-        await catchUpToAhead(wallet, accountName, ahead);
+        await discoverFn(wallet, account, ahead, opts);
 
       // Final look at full picture.
       await wdb.scan(chain.tip.height - 1);
-      await assertBalance(wallet, accountName, blockConfirmBalance,
-        'Block confirm balance is not correct.');
+      await checks.blockConfirmCheck(wallet, account, ahead, opts);
 
       if (discoverAt === DISCOVER_TYPES.BEFORE_BLOCK_UNCONFIRM)
-        await catchUpToAhead(wallet, accountName, ahead);
+        await discoverFn(wallet, account, ahead, opts);
 
       // Unconfirm
       await wdb.revert(chain.tip.height - 1);
-      await assertBalance(wallet, accountName, blockUnconfirmedBalance,
-        'Block unconfirmed balance is not correct.');
+      await checks.blockUnconfirmCheck(wallet, account, ahead, opts);
 
       // Clean up wallet.
       await wdb.scan(chain.tip.height - 1);
-
-      let finalBalance = blockConfirmBalance;
-
-      if (balances.blockFinalConfirmBalance)
-        finalBalance = balances.blockFinalConfirmBalance;
-
-      await assertBalance(wallet, accountName, finalBalance,
-        'Final block confirm balance is not correct.');
+      await checks.blockFinalConfirmCheck(wallet, account, ahead, opts);
     };
+  };
+
+  const BALANCE_CHECK_MAP = {
+    initCheck: ['initialBalance', 'Initial'],
+    sentCheck: ['sentBalance', 'Sent'],
+    confirmedCheck: ['confirmedBalance', 'Confirmed'],
+    unconfirmedCheck: ['unconfirmedBalance', 'Unconfirmed'],
+    eraseCheck: ['eraseBalance', 'Erase'],
+    blockConfirmCheck: ['blockConfirmedBalance', 'Block confirmed'],
+    blockUnconfirmCheck: ['blockUnconfirmedBalance', 'Block unconfirmed'],
+    blockFinalConfirmCheck: ['blockFinalConfirmedBalance', 'Block final confirmed']
+  };
+
+  /**
+   * Check against wallet and default account balances.
+   * @param {TestBalances} balances
+   * @returns {CheckFunctions}
+   */
+
+  const defBalanceChecks = (balances) => {
+    const checks = {};
+
+    for (const [key, [balanceName, name]] of Object.entries(BALANCE_CHECK_MAP)) {
+      checks[key] = async (wallet) => {
+        let bname = balanceName;
+
+        if (bname === 'blockFinalConfirmedBalance' && !balances[bname])
+          bname = 'blockConfirmedBalance';
+
+        await assertBalance(wallet, DEFAULT_ACCOUNT, balances[bname],
+          `${name} balance is incorrect in the account ${DEFAULT_ACCOUNT}.`);
+
+        await assertBalance(wallet, -1, balances[bname],
+          `${name} balance is incorrect for the wallet.`);
+      };
+    }
+
+    return checks;
+  };
+
+  /**
+   * Check also wallet, default and alt account balances.
+   * @param {TestBalances} walletBalances
+   * @param {TestBalances} defBalances - default account
+   * @param {TestBalances} altBalances - alt account balances
+   * @returns {CheckFunctions}
+   */
+
+  const checkAllBalances = (walletBalances, defBalances, altBalances) => {
+    const checks = {};
+
+    for (const [key, [balanceName, name]] of Object.entries(BALANCE_CHECK_MAP)) {
+      checks[key] = async (wallet) => {
+        let bname = balanceName;
+
+        if (bname === 'blockFinalConfirmedBalance' && !defBalances[bname])
+          bname = 'blockConfirmedBalance';
+
+        await assertBalance(wallet, DEFAULT_ACCOUNT, defBalances[bname],
+          `${name} balance is incorrect in the account ${DEFAULT_ACCOUNT}.`);
+
+        await assertBalance(wallet, ALT_ACCOUNT, altBalances[bname],
+          `${name} balance is incorrect in the account ${ALT_ACCOUNT}.`);
+
+        await assertBalance(wallet, -1, walletBalances[bname],
+          `${name} balance is incorrect for the wallet.`);
+      };
+    }
+
+    return checks;
+  };
+
+  const defDiscover = async (wallet, account, ahead) => {
+    await catchUpToAhead(wallet, account.name, ahead);
   };
 
   describe('NONE -> NONE* (normal receive)', function() {
@@ -443,35 +518,39 @@ describe('Wallet Balance', function() {
     it('should handle normal receive (no discovery)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: SEND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: SEND_AMOUNT
       });
 
-      balances.unconfirmedBalance = balances.receiveBalance;
+      balances.unconfirmedBalance = balances.sentBalance;
       balances.eraseBalance = balances.initialBalance;
-      balances.blockConfirmBalance = balances.confirmedBalance;
-      balances.blockUnconfirmedBalance = balances.receiveBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
+      balances.blockUnconfirmedBalance = balances.sentBalance;
 
-      await test(balances, DISCOVER_TYPES.NONE);
+      await test(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
 
     it('should handle normal receive, discover on confirm', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: SEND_AMOUNT
       });
 
       // here we discover second coin.
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         coin: 1,
         confirmed: SEND_AMOUNT * 2,
         unconfirmed: SEND_AMOUNT
@@ -484,22 +563,26 @@ describe('Wallet Balance', function() {
       balances.eraseBalance = balances.initialBalance;
 
       // We have already derived, so this should discover right away
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
       balances.blockUnconfirmedBalance = balances.unconfirmedBalance;
 
-      await test(balances, DISCOVER_TYPES.BEFORE_CONFIRM);
+      await test(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_CONFIRM
+      );
     });
 
     it('should handle normal receive, discover on unconfirm', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: SEND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: SEND_AMOUNT
       });
 
@@ -520,52 +603,57 @@ describe('Wallet Balance', function() {
       balances.eraseBalance = balances.initialBalance;
 
       // We have already derived, so this should discover right away
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         confirmed: SEND_AMOUNT * 2,
         unconfirmed: SEND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: -SEND_AMOUNT * 2
       });
 
-      await test(balances, DISCOVER_TYPES.BEFORE_UNCONFIRM);
+      await test(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_UNCONFIRM
+      );
     });
 
     // This is same as discover on block confirm.
     it('should handle normal receive, discover on erase/block confirm', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: SEND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: SEND_AMOUNT
       });
 
-      balances.unconfirmedBalance = balances.receiveBalance;
+      balances.unconfirmedBalance = balances.sentBalance;
 
       // Those credits are gone anyway, so nothing will be added to the balances.
       balances.eraseBalance = balances.initialBalance;
 
-      balances.blockConfirmBalance = applyDelta(balances.eraseBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.eraseBalance, {
         tx: 1,
         coin: 2,
         unconfirmed: SEND_AMOUNT * 2,
         confirmed: SEND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: -SEND_AMOUNT * 2
       });
 
-      await test(balances, DISCOVER_TYPES.BEFORE_ERASE);
-      await test(balances, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
+      const checks = defBalanceChecks(balances);
+      await test(checks, defDiscover, DISCOVER_TYPES.BEFORE_ERASE);
+      await test(checks, defDiscover, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
     });
 
     it.skip('should handle normal receive, discover on block unconfirm', async () => {
@@ -582,7 +670,7 @@ describe('Wallet Balance', function() {
 
     let coins, nextAddr, receiveKey;
 
-    const setup = async (wallet, account, ahead) => {
+    const setupTXFromFuture = async (wallet, account, ahead) => {
       const recvAddr = await wallet.receiveAddress();
       const aheadAddr = getAheadAddr(account, ahead, wallet.master);
       nextAddr = aheadAddr.nextAddr;
@@ -636,7 +724,7 @@ describe('Wallet Balance', function() {
     };
 
     const AHEAD = 10;
-    const test = balanceTest(setup, receive, AHEAD);
+    const test = balanceTest(setupTXFromFuture, receive, AHEAD);
 
     it('should spend normal credit (no discovery)', async () => {
       const balances = {};
@@ -647,13 +735,13 @@ describe('Wallet Balance', function() {
         unconfirmed: SEND_AMOUNT
       });
 
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: -1,
         unconfirmed: -SEND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -SEND_AMOUNT
       });
 
@@ -667,18 +755,22 @@ describe('Wallet Balance', function() {
         unconfirmed: SEND_AMOUNT
       });
 
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: -1,
         confirmed: -SEND_AMOUNT,
         unconfirmed: -SEND_AMOUNT
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: SEND_AMOUNT
       });
 
-      await test(balances, DISCOVER_TYPES.NONE);
+      await test(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
 
     it.skip('should spend credit (discover before confirm)', async () => {
@@ -768,40 +860,42 @@ describe('Wallet Balance', function() {
 
     // We receive 2 transactions (receiving one and spending one)
     // But we spend discovered output right away.
-    const receiveBalance = applyDelta(initialBalance, {
+    const sentBalance = applyDelta(initialBalance, {
       tx: 2,
       coin: 0,
       unconfirmed: 0
     });
 
     // Nothing changes for confirmed either. (Coins are spent in pending)
-    const confirmedBalance = applyDelta(receiveBalance, {});
+    const confirmedBalance = applyDelta(sentBalance, {});
     const unconfirmedBalance = applyDelta(confirmedBalance, {});
 
     // We no longer have two txs.
     const eraseBalance = applyDelta(unconfirmedBalance, { tx: -2 });
-    const blockConfirmBalance = confirmedBalance;
+    const blockConfirmedBalance = confirmedBalance;
     const blockUnconfirmedBalance = unconfirmedBalance;
 
     const balances = {
       initialBalance,
-      receiveBalance,
+      sentBalance,
       confirmedBalance,
       unconfirmedBalance,
       eraseBalance,
-      blockConfirmBalance,
+      blockConfirmedBalance,
       blockUnconfirmedBalance
     };
 
+    const checks = defBalanceChecks(balances);
+
     it('should spend credit (no discovery)', async () => {
-      await test(balances, DISCOVER_TYPES.NONE);
+      await test(checks, DISCOVER_TYPES.NONE);
     });
 
     it('should spend credit (discover on confirm)', async () => {
       // Here we discover another output on Confirm.
       // But it is spent right away from the next transaction
       // that gets committed. So nothing will actually change.
-      await test(balances, DISCOVER_TYPES.BEFORE_CONFIRM);
+      await test(checks, DISCOVER_TYPES.BEFORE_CONFIRM);
     });
 
     it('should spend credit (discover on unconfirm)', async () => {
@@ -809,25 +903,25 @@ describe('Wallet Balance', function() {
       // is another TODO: Add spent in pending credit discovery.
       // Balance will be the same, but the entries in the database
       // for the coin will be different.
-      await test(balances, DISCOVER_TYPES.BEFORE_UNCONFIRM);
+      await test(checks, DISCOVER_TYPES.BEFORE_UNCONFIRM);
     });
 
     it('should spend credit (discover on erase)', async () => {
       // Nothing should happen as outputs go away.. Does not matter
       // if we discover.
-      await test(balances, DISCOVER_TYPES.BEFORE_ERASE);
+      await test(checks, DISCOVER_TYPES.BEFORE_ERASE);
     });
 
     it('should spend credit (discover on block confirm)', async () => {
       // Here we discover the coins, but because they are spent right away
       // it must not change the coin/balance.
       // Test for that is covered above in normal receive.
-      await test(balances, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
+      await test(checks, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
     });
 
     it('should spend credit (discover on block unconfirm)', async () => {
       // Same as UNCONFIRM note.
-      await test(balances, DISCOVER_TYPES.BEFORE_BLOCK_UNCONFIRM);
+      await test(checks, DISCOVER_TYPES.BEFORE_BLOCK_UNCONFIRM);
     });
   });
 
@@ -843,7 +937,7 @@ describe('Wallet Balance', function() {
 
     after(afterAll);
 
-    const receive = async (wallet) => {
+    const sendOpen = async (wallet) => {
       const name = grindName(GRIND_NAME_LEN, chain.tip.height, network);
 
       await wallet.sendOpen(name, false, {
@@ -851,20 +945,20 @@ describe('Wallet Balance', function() {
       });
     };
 
-    const test = balanceTest(null, receive, 0);
+    const testOpen = balanceTest(null, sendOpen, 0);
 
     it('should handle open', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
 
       // TODO: This should not introduce new COIN.
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: -HARD_FEE
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -HARD_FEE
       });
 
@@ -879,10 +973,14 @@ describe('Wallet Balance', function() {
         unconfirmed: HARD_FEE
       });
 
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
       balances.blockUnconfirmedBalance = balances.unconfirmedBalance;
 
-      await test(balances, DISCOVER_TYPES.NONE);
+      await testOpen(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
   });
 
@@ -895,7 +993,7 @@ describe('Wallet Balance', function() {
     after(afterAll);
 
     let name = null;
-    const setup = async () => {
+    const setupBidName = async () => {
       name = grindName(GRIND_NAME_LEN, chain.tip.height, network);
 
       await primary.sendOpen(name, false);
@@ -921,12 +1019,12 @@ describe('Wallet Balance', function() {
     };
 
     const AHEAD = 10;
-    const test = balanceTest(setup, sendNormalBid, AHEAD);
+    const testBidReceive = balanceTest(setupBidName, sendNormalBid, AHEAD);
 
     it('should receive bid (no discovery)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // We have additional coin because: output -> BID + Change
         // Additional BID is undiscovered.
@@ -936,7 +1034,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -HARD_FEE - BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -953,16 +1051,20 @@ describe('Wallet Balance', function() {
         ulocked: -BLIND_AMOUNT
       });
 
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
       balances.blockUnconfirmedBalance = balances.unconfirmedBalance;
 
-      await test(balances, DISCOVER_TYPES.NONE);
+      await testBidReceive(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
 
     it('should receive bid (discover on confirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // We have additional coin because: output -> BID + Change
         // Additional BID is undiscovered.
@@ -972,7 +1074,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         // We discovered another bid is also ours..
         coin: 1,
         // So we add discovered bid back to our balance
@@ -998,23 +1100,27 @@ describe('Wallet Balance', function() {
         ulocked: -BLIND_AMOUNT * 2
       });
 
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
       balances.blockUnconfirmedBalance = balances.unconfirmedBalance;
 
-      await test(balances, DISCOVER_TYPES.BEFORE_CONFIRM);
+      await testBidReceive(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_CONFIRM
+      );
     });
 
     it('should receive bid (discover on unconfirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: -HARD_FEE - BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -HARD_FEE - BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1049,7 +1155,7 @@ describe('Wallet Balance', function() {
       });
 
       // Insert(block) recovers balance.
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         unconfirmed: -HARD_FEE,
@@ -1058,26 +1164,30 @@ describe('Wallet Balance', function() {
         clocked: BLIND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         clocked: -BLIND_AMOUNT * 2,
         confirmed: HARD_FEE
       });
 
-      await test(balances, DISCOVER_TYPES.BEFORE_UNCONFIRM);
+      await testBidReceive(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_UNCONFIRM
+      );
     });
 
     // this should be same as discover on block confirm.
     it('should receive bid (discover on erase/block confirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: -HARD_FEE - BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -HARD_FEE - BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1095,7 +1205,7 @@ describe('Wallet Balance', function() {
       });
 
       // Start from init balance
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         unconfirmed: -HARD_FEE,
@@ -1104,26 +1214,27 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: HARD_FEE,
         clocked: -BLIND_AMOUNT * 2
       });
 
-      await test(balances, DISCOVER_TYPES.BEFORE_ERASE);
-      await test(balances, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
+      const checks = defBalanceChecks(balances);
+      await testBidReceive(checks, defDiscover, DISCOVER_TYPES.BEFORE_ERASE);
+      await testBidReceive(checks, defDiscover, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
     });
 
     it('should receive bid (discover on block unconfirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 1,
         unconfirmed: -HARD_FEE - BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: -HARD_FEE - BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1141,7 +1252,7 @@ describe('Wallet Balance', function() {
       });
 
       // Insert(block) recovers balance.
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         unconfirmed: -HARD_FEE,
@@ -1152,7 +1263,7 @@ describe('Wallet Balance', function() {
 
       // TODO: Unconfirm balance update.
       // TODO: This after unconfirm discovery should be:
-      // balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      // balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
       //   // revert confirmed
       //   confirmed: HARD_FEE + BLIND_AMOUNT,
       //   // nothing is clocked.
@@ -1165,12 +1276,16 @@ describe('Wallet Balance', function() {
       //   // new bid is our coin.
       //   coin: 1
       // });
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         clocked: -BLIND_AMOUNT * 2,
         confirmed: HARD_FEE
       });
 
-      await test(balances, DISCOVER_TYPES.BEFORE_UNCONFIRM);
+      await testBidReceive(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_UNCONFIRM
+      );
     });
   });
 
@@ -1183,7 +1298,7 @@ describe('Wallet Balance', function() {
     after(afterAll);
 
     let name = null;
-    const setup = async () => {
+    const setupBidName = async () => {
       name = grindName(GRIND_NAME_LEN, chain.tip.height, network);
 
       await primary.sendOpen(name, false);
@@ -1212,12 +1327,12 @@ describe('Wallet Balance', function() {
     };
 
     const AHEAD = 10;
-    const testForeign = balanceTest(setup, sendForeignBid, AHEAD);
+    const testForeign = balanceTest(setupBidName, sendForeignBid, AHEAD);
 
     it('should receive foreign bid (no discovery)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // only BID
         coin: 1,
@@ -1226,7 +1341,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1237,16 +1352,20 @@ describe('Wallet Balance', function() {
       });
 
       balances.eraseBalance = balances.initialBalance;
-      balances.blockConfirmBalance = balances.confirmedBalance;
-      balances.blockUnconfirmedBalance = balances.receiveBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
+      balances.blockUnconfirmedBalance = balances.sentBalance;
 
-      await testForeign(balances, DISCOVER_TYPES.NONE);
+      await testForeign(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
 
     it('should receive foreign bid (on confirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // only BID
         coin: 1,
@@ -1256,7 +1375,7 @@ describe('Wallet Balance', function() {
       });
 
       // here we discover another coin
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         coin: 1,
         unconfirmed: BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT,
@@ -1270,16 +1389,20 @@ describe('Wallet Balance', function() {
       });
 
       balances.eraseBalance = balances.initialBalance;
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
       balances.blockUnconfirmedBalance = balances.unconfirmedBalance;
 
-      await testForeign(balances, DISCOVER_TYPES.BEFORE_CONFIRM);
+      await testForeign(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_CONFIRM
+      );
     });
 
     it('should receive foreign bid (on unconfirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // only BID
         coin: 1,
@@ -1288,7 +1411,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1301,7 +1424,7 @@ describe('Wallet Balance', function() {
 
       balances.eraseBalance = balances.initialBalance;
       // Currently it's as if we discovered them after block confirm
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         confirmed: BLIND_AMOUNT * 2,
@@ -1310,18 +1433,22 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: -BLIND_AMOUNT * 2,
         clocked: -BLIND_AMOUNT * 2
       });
 
-      await testForeign(balances, DISCOVER_TYPES.BEFORE_UNCONFIRM);
+      await testForeign(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_UNCONFIRM
+      );
     });
 
     it('should receive foreign bid (on erase/block confirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // only BID
         coin: 1,
@@ -1330,7 +1457,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1341,7 +1468,7 @@ describe('Wallet Balance', function() {
       });
 
       balances.eraseBalance = balances.initialBalance;
-      balances.blockConfirmBalance = applyDelta(balances.initialBalance, {
+      balances.blockConfirmedBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         coin: 2,
         unconfirmed: BLIND_AMOUNT * 2,
@@ -1350,19 +1477,20 @@ describe('Wallet Balance', function() {
         clocked: BLIND_AMOUNT * 2
       });
 
-      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockUnconfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         confirmed: -BLIND_AMOUNT * 2,
         clocked: -BLIND_AMOUNT * 2
       });
 
-      await testForeign(balances, DISCOVER_TYPES.BEFORE_ERASE);
-      await testForeign(balances, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
+      const checks = defBalanceChecks(balances);
+      await testForeign(checks, defDiscover, DISCOVER_TYPES.BEFORE_ERASE);
+      await testForeign(checks, defDiscover, DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM);
     });
 
     it('should receive foreign bid (block unconfirm)', async () => {
       const balances = {};
       balances.initialBalance = INIT_BALANCE;
-      balances.receiveBalance = applyDelta(balances.initialBalance, {
+      balances.sentBalance = applyDelta(balances.initialBalance, {
         tx: 1,
         // only BID
         coin: 1,
@@ -1371,7 +1499,7 @@ describe('Wallet Balance', function() {
         ulocked: BLIND_AMOUNT
       });
 
-      balances.confirmedBalance = applyDelta(balances.receiveBalance, {
+      balances.confirmedBalance = applyDelta(balances.sentBalance, {
         confirmed: BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
@@ -1382,19 +1510,150 @@ describe('Wallet Balance', function() {
       });
 
       balances.eraseBalance = balances.initialBalance;
-      balances.blockConfirmBalance = balances.confirmedBalance;
+      balances.blockConfirmedBalance = balances.confirmedBalance;
 
       // TODO: Unconfirm balance update
-      balances.blockUnconfirmedBalance = balances.receiveBalance;
+      balances.blockUnconfirmedBalance = balances.sentBalance;
       // final confirm
-      balances.blockFinalConfirmBalance = applyDelta(balances.blockConfirmBalance, {
+      balances.blockFinalConfirmedBalance = applyDelta(balances.blockConfirmedBalance, {
         coin: 1,
         confirmed: BLIND_AMOUNT,
         clocked: BLIND_AMOUNT,
         unconfirmed: BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
       });
-      await testForeign(balances, DISCOVER_TYPES.BEFORE_BLOCK_UNCONFIRM);
+
+      await testForeign(
+        defBalanceChecks(balances),
+        defDiscover,
+        DISCOVER_TYPES.BEFORE_BLOCK_UNCONFIRM
+      );
+    });
+  });
+
+  describe('NONE -> BID* (cross acct)', function() {
+    before(() => {
+      genWallets = 1;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name;
+    const setupAcctAndBidName = async (wallet) => {
+      await wallet.createAccount({
+        name: ALT_ACCOUNT
+      });
+
+      name = grindName(GRIND_NAME_LEN, chain.tip.height, network);
+
+      await primary.sendOpen(name, false);
+      await mineBlocks(openingPeriod);
+    };
+
+    const sendCrossAcct = async (wallet) => {
+      const altAccount = await wallet.getAccount(ALT_ACCOUNT);
+
+      // not actually next, we test normal recive.
+      const {nextAddr} = getAheadAddr(altAccount, -altAccount.lookahead);
+
+      const bidMTX = await wallet.createBid(name, BID_AMOUNT, BLIND_AMOUNT, {
+        hardFee: HARD_FEE
+      });
+      assert.strictEqual(bidMTX.outputs[0].covenant.type, types.BID);
+      bidMTX.outputs[0].address = nextAddr;
+
+      await resign(wallet, bidMTX);
+      node.mempool.addTX(bidMTX.toTX());
+      await forWTX(wallet.id, bidMTX.hash());
+    };
+
+    const testCrossAcctBalance = balanceTest(setupAcctAndBidName, sendCrossAcct, 0);
+
+    it('should track bid cross acct', async () => {
+      const walletBalances = {};
+      const defBalances = {};
+      const altBalances = {};
+
+      walletBalances.initialBalance = INIT_BALANCE;
+      defBalances.initialBalance = INIT_BALANCE;
+      altBalances.initialBalance = NULL_BALANCE;
+
+      // sent from default to alt, default account does not lock
+      defBalances.sentBalance = applyDelta(defBalances.initialBalance, {
+        tx: 1,
+        // output -> change output + BID to alt
+        coin: 0,
+        unconfirmed: -HARD_FEE - BLIND_AMOUNT
+      });
+
+      // alt account balance locks unconfirmed and receives coin.
+      altBalances.sentBalance = applyDelta(altBalances.initialBalance, {
+        tx: 1,
+        // received BID
+        coin: 1,
+        unconfirmed: BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // Wallet only spends FEE
+      walletBalances.sentBalance = applyDelta(walletBalances.initialBalance, {
+        tx: 1,
+        // Total coins is: output -> BID output + CHANGE
+        coin: 1,
+        unconfirmed: -HARD_FEE,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // NOW CONFIRM
+
+      defBalances.confirmedBalance = applyDelta(defBalances.sentBalance, {
+        confirmed: -HARD_FEE - BLIND_AMOUNT
+      });
+
+      altBalances.confirmedBalance = applyDelta(altBalances.sentBalance, {
+        confirmed: BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT
+      });
+
+      walletBalances.confirmedBalance = applyDelta(walletBalances.sentBalance, {
+        confirmed: -HARD_FEE,
+        clocked: BLIND_AMOUNT
+      });
+
+      // NOW Unconfirm again
+      defBalances.unconfirmedBalance = applyDelta(defBalances.confirmedBalance, {
+        confirmed: HARD_FEE + BLIND_AMOUNT
+      });
+
+      altBalances.unconfirmedBalance = applyDelta(altBalances.confirmedBalance, {
+        confirmed: -BLIND_AMOUNT,
+        clocked: -BLIND_AMOUNT
+      });
+
+      walletBalances.unconfirmedBalance = applyDelta(walletBalances.confirmedBalance, {
+        confirmed: HARD_FEE,
+        clocked: -BLIND_AMOUNT
+      });
+
+      // NOW Erase
+      walletBalances.eraseBalance = walletBalances.initialBalance;
+      defBalances.eraseBalance = defBalances.initialBalance;
+      altBalances.eraseBalance = altBalances.initialBalance;
+
+      walletBalances.blockConfirmedBalance = walletBalances.confirmedBalance;
+      defBalances.blockConfirmedBalance = defBalances.confirmedBalance;
+      altBalances.blockConfirmedBalance = altBalances.confirmedBalance;
+
+      walletBalances.blockUnconfirmedBalance = walletBalances.unconfirmedBalance;
+      defBalances.blockUnconfirmedBalance = defBalances.unconfirmedBalance;
+      altBalances.blockUnconfirmedBalance = altBalances.unconfirmedBalance;
+
+      await testCrossAcctBalance(
+        checkAllBalances(walletBalances, defBalances, altBalances),
+        defDiscover,
+        DISCOVER_TYPES.NONE
+      );
     });
   });
 });
