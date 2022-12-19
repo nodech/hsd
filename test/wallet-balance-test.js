@@ -483,7 +483,11 @@ describe('Wallet Balance', function() {
   };
 
   const defDiscover = async (wallet, account, ahead) => {
-    await catchUpToAhead(wallet, account.name, ahead);
+    await catchUpToAhead(wallet, DEFAULT_ACCOUNT, ahead);
+  };
+
+  const altDiscover = async (wallet, account, ahead) => {
+    await catchUpToAhead(wallet, ALT_ACCOUNT, ahead);
   };
 
   describe('NONE -> NONE* (normal receive)', function() {
@@ -1533,7 +1537,7 @@ describe('Wallet Balance', function() {
 
   describe('NONE -> BID* (cross acct)', function() {
     before(() => {
-      genWallets = 1;
+      genWallets = 5;
       return beforeAll();
     });
 
@@ -1551,24 +1555,33 @@ describe('Wallet Balance', function() {
       await mineBlocks(openingPeriod);
     };
 
-    const sendCrossAcct = async (wallet) => {
+    const sendCrossAcct = async (wallet, account, ahead) => {
+      const txOpts = { hardFee: HARD_FEE };
       const altAccount = await wallet.getAccount(ALT_ACCOUNT);
 
       // not actually next, we test normal recive.
-      const {nextAddr} = getAheadAddr(altAccount, -altAccount.lookahead);
+      const addr1 = getAheadAddr(altAccount, -altAccount.lookahead);
+      const addr2 = getAheadAddr(altAccount, ahead);
 
-      const bidMTX = await wallet.createBid(name, BID_AMOUNT, BLIND_AMOUNT, {
-        hardFee: HARD_FEE
-      });
+      const bidMTX = await wallet.createBatch([
+        ['BID', name, BID_AMOUNT, BLIND_AMOUNT],
+        ['BID', name, BID_AMOUNT, BLIND_AMOUNT]
+      ], txOpts);
+
       assert.strictEqual(bidMTX.outputs[0].covenant.type, types.BID);
-      bidMTX.outputs[0].address = nextAddr;
+      assert.strictEqual(bidMTX.outputs[1].covenant.type, types.BID);
+
+      bidMTX.outputs[0].address = addr1.nextAddr;
+      // future tx.
+      bidMTX.outputs[1].address = addr2.nextAddr;
 
       await resign(wallet, bidMTX);
       node.mempool.addTX(bidMTX.toTX());
       await forWTX(wallet.id, bidMTX.hash());
     };
 
-    const testCrossAcctBalance = balanceTest(setupAcctAndBidName, sendCrossAcct, 0);
+    const AHEAD = 10;
+    const testCrossAcctBalance = balanceTest(setupAcctAndBidName, sendCrossAcct, AHEAD);
 
     it('should track bid cross acct', async () => {
       const walletBalances = {};
@@ -1582,15 +1595,15 @@ describe('Wallet Balance', function() {
       // sent from default to alt, default account does not lock
       defBalances.sentBalance = applyDelta(defBalances.initialBalance, {
         tx: 1,
-        // output -> change output + BID to alt
+        // output -> change output + 2 BIDs to alt
         coin: 0,
-        unconfirmed: -HARD_FEE - BLIND_AMOUNT
+        unconfirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
       });
 
       // alt account balance locks unconfirmed and receives coin.
       altBalances.sentBalance = applyDelta(altBalances.initialBalance, {
         tx: 1,
-        // received BID
+        // received BID + missed BID.
         coin: 1,
         unconfirmed: BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
@@ -1599,16 +1612,16 @@ describe('Wallet Balance', function() {
       // Wallet only spends FEE
       walletBalances.sentBalance = applyDelta(walletBalances.initialBalance, {
         tx: 1,
-        // Total coins is: output -> BID output + CHANGE
+        // Total coins is: output -> BID output + CHANGE + Undiscovered BID
         coin: 1,
-        unconfirmed: -HARD_FEE,
+        // for now another bid just out transaction.
+        unconfirmed: -HARD_FEE - BLIND_AMOUNT,
         ulocked: BLIND_AMOUNT
       });
 
       // NOW CONFIRM
-
       defBalances.confirmedBalance = applyDelta(defBalances.sentBalance, {
-        confirmed: -HARD_FEE - BLIND_AMOUNT
+        confirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
       });
 
       altBalances.confirmedBalance = applyDelta(altBalances.sentBalance, {
@@ -1617,13 +1630,13 @@ describe('Wallet Balance', function() {
       });
 
       walletBalances.confirmedBalance = applyDelta(walletBalances.sentBalance, {
-        confirmed: -HARD_FEE,
+        confirmed: -HARD_FEE - BLIND_AMOUNT,
         clocked: BLIND_AMOUNT
       });
 
       // NOW Unconfirm again
       defBalances.unconfirmedBalance = applyDelta(defBalances.confirmedBalance, {
-        confirmed: HARD_FEE + BLIND_AMOUNT
+        confirmed: HARD_FEE + (BLIND_AMOUNT * 2)
       });
 
       altBalances.unconfirmedBalance = applyDelta(altBalances.confirmedBalance, {
@@ -1632,7 +1645,7 @@ describe('Wallet Balance', function() {
       });
 
       walletBalances.unconfirmedBalance = applyDelta(walletBalances.confirmedBalance, {
-        confirmed: HARD_FEE,
+        confirmed: HARD_FEE + BLIND_AMOUNT,
         clocked: -BLIND_AMOUNT
       });
 
@@ -1651,9 +1664,337 @@ describe('Wallet Balance', function() {
 
       await testCrossAcctBalance(
         checkAllBalances(walletBalances, defBalances, altBalances),
-        defDiscover,
+        altDiscover,
         DISCOVER_TYPES.NONE
       );
     });
+
+    it('should track bid cross acct (discover on confirm)', async () => {
+      const walletBalances = {};
+      const defBalances = {};
+      const altBalances = {};
+
+      walletBalances.initialBalance = INIT_BALANCE;
+      defBalances.initialBalance = INIT_BALANCE;
+      altBalances.initialBalance = NULL_BALANCE;
+
+      // sent from default to alt, default account does not lock
+      defBalances.sentBalance = applyDelta(defBalances.initialBalance, {
+        tx: 1,
+        // output -> change output + 2 BIDs to alt
+        coin: 0,
+        unconfirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      // alt account balance locks unconfirmed and receives coin.
+      altBalances.sentBalance = applyDelta(altBalances.initialBalance, {
+        tx: 1,
+        // received BID + missed BID.
+        coin: 1,
+        unconfirmed: BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // Wallet only spends FEE
+      walletBalances.sentBalance = applyDelta(walletBalances.initialBalance, {
+        tx: 1,
+        // Total coins is: output -> BID output + CHANGE + Undiscovered BID
+        coin: 1,
+        // for now another bid just out transaction.
+        unconfirmed: -HARD_FEE - BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // NOW CONFIRM
+      defBalances.confirmedBalance = applyDelta(defBalances.sentBalance, {
+        confirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.confirmedBalance = applyDelta(altBalances.sentBalance, {
+        coin: 1,
+        confirmed: BLIND_AMOUNT + BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT + BLIND_AMOUNT,
+        unconfirmed: BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // account for newly discover locks
+      walletBalances.confirmedBalance = applyDelta(walletBalances.sentBalance, {
+        coin: 1,
+        unconfirmed: BLIND_AMOUNT,
+        confirmed: -HARD_FEE,
+        clocked: BLIND_AMOUNT * 2,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // NOW Unconfirm again
+      defBalances.unconfirmedBalance = applyDelta(defBalances.confirmedBalance, {
+        confirmed: HARD_FEE + (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.unconfirmedBalance = applyDelta(altBalances.confirmedBalance, {
+        confirmed: -(BLIND_AMOUNT * 2),
+        clocked: -(BLIND_AMOUNT * 2)
+      });
+
+      walletBalances.unconfirmedBalance = applyDelta(walletBalances.confirmedBalance, {
+        confirmed: HARD_FEE,
+        clocked: -(BLIND_AMOUNT * 2)
+      });
+
+      // NOW Erase
+      walletBalances.eraseBalance = walletBalances.initialBalance;
+      defBalances.eraseBalance = defBalances.initialBalance;
+      altBalances.eraseBalance = altBalances.initialBalance;
+
+      walletBalances.blockConfirmedBalance = walletBalances.confirmedBalance;
+      defBalances.blockConfirmedBalance = defBalances.confirmedBalance;
+      altBalances.blockConfirmedBalance = altBalances.confirmedBalance;
+
+      walletBalances.blockUnconfirmedBalance = walletBalances.unconfirmedBalance;
+      defBalances.blockUnconfirmedBalance = defBalances.unconfirmedBalance;
+      altBalances.blockUnconfirmedBalance = altBalances.unconfirmedBalance;
+
+      await testCrossAcctBalance(
+        checkAllBalances(walletBalances, defBalances, altBalances),
+        altDiscover,
+        DISCOVER_TYPES.BEFORE_CONFIRM
+      );
+    });
+
+    it('should track bid cross acct (discover on unconfirm)', async () => {
+      const walletBalances = {};
+      const defBalances = {};
+      const altBalances = {};
+
+      walletBalances.initialBalance = INIT_BALANCE;
+      defBalances.initialBalance = INIT_BALANCE;
+      altBalances.initialBalance = NULL_BALANCE;
+
+      // sent from default to alt, default account does not lock
+      defBalances.sentBalance = applyDelta(defBalances.initialBalance, {
+        tx: 1,
+        // output -> change output + 2 BIDs to alt
+        coin: 0,
+        unconfirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      // alt account balance locks unconfirmed and receives coin.
+      altBalances.sentBalance = applyDelta(altBalances.initialBalance, {
+        tx: 1,
+        // received BID + missed BID.
+        coin: 1,
+        unconfirmed: BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // Wallet only spends FEE
+      walletBalances.sentBalance = applyDelta(walletBalances.initialBalance, {
+        tx: 1,
+        // Total coins is: output -> BID output + CHANGE + Undiscovered BID
+        coin: 1,
+        // for now another bid just out transaction.
+        unconfirmed: -HARD_FEE - BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // NOW CONFIRM
+      defBalances.confirmedBalance = applyDelta(defBalances.sentBalance, {
+        confirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.confirmedBalance = applyDelta(altBalances.sentBalance, {
+        confirmed: BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT
+      });
+
+      walletBalances.confirmedBalance = applyDelta(walletBalances.sentBalance, {
+        confirmed: -HARD_FEE - BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT
+      });
+
+      // NOW Unconfirm again, HERE WE DISCOVER - No effect.
+      // TODO: Same as above unconfirms.
+      // For all three balances.
+      defBalances.unconfirmedBalance = applyDelta(defBalances.confirmedBalance, {
+        confirmed: HARD_FEE + (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.unconfirmedBalance = applyDelta(altBalances.confirmedBalance, {
+        confirmed: -BLIND_AMOUNT,
+        clocked: -BLIND_AMOUNT
+      });
+
+      walletBalances.unconfirmedBalance = applyDelta(walletBalances.confirmedBalance, {
+        confirmed: HARD_FEE + BLIND_AMOUNT,
+        clocked: -BLIND_AMOUNT
+      });
+
+      // NOW Erase
+      walletBalances.eraseBalance = walletBalances.initialBalance;
+      defBalances.eraseBalance = defBalances.initialBalance;
+      altBalances.eraseBalance = altBalances.initialBalance;
+
+      // Now we are aware of the output.
+      walletBalances.blockConfirmedBalance = applyDelta(walletBalances.eraseBalance, {
+        tx: 1,
+        // output -> BID + BID + CHANGE
+        coin: 2,
+
+        confirmed: -HARD_FEE,
+        unconfirmed: -HARD_FEE,
+
+        ulocked: BLIND_AMOUNT * 2,
+        clocked: BLIND_AMOUNT * 2
+      });
+      // Def balance does not change
+      defBalances.blockConfirmedBalance = defBalances.confirmedBalance;
+      altBalances.blockConfirmedBalance = applyDelta(altBalances.eraseBalance, {
+        tx: 1,
+        coin: 2,
+
+        confirmed: BLIND_AMOUNT * 2,
+        unconfirmed: BLIND_AMOUNT * 2,
+        ulocked: BLIND_AMOUNT * 2,
+        clocked: BLIND_AMOUNT * 2
+      });
+
+      walletBalances.blockUnconfirmedBalance = applyDelta(walletBalances.blockConfirmedBalance, {
+        confirmed: HARD_FEE,
+        clocked: -BLIND_AMOUNT * 2
+      });
+
+      defBalances.blockUnconfirmedBalance = defBalances.unconfirmedBalance;
+      altBalances.blockUnconfirmedBalance = applyDelta(altBalances.blockConfirmedBalance, {
+        confirmed: -BLIND_AMOUNT * 2,
+        clocked: -BLIND_AMOUNT * 2
+      });
+
+      await testCrossAcctBalance(
+        checkAllBalances(walletBalances, defBalances, altBalances),
+        altDiscover,
+        DISCOVER_TYPES.BEFORE_UNCONFIRM
+      );
+    });
+
+    it('should track bid cross act (discover on erase/block confirm)', async () => {
+      const walletBalances = {};
+      const defBalances = {};
+      const altBalances = {};
+
+      walletBalances.initialBalance = INIT_BALANCE;
+      defBalances.initialBalance = INIT_BALANCE;
+      altBalances.initialBalance = NULL_BALANCE;
+
+      // sent from default to alt, default account does not lock
+      defBalances.sentBalance = applyDelta(defBalances.initialBalance, {
+        tx: 1,
+        // output -> change output + 2 BIDs to alt
+        coin: 0,
+        unconfirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      // alt account balance locks unconfirmed and receives coin.
+      altBalances.sentBalance = applyDelta(altBalances.initialBalance, {
+        tx: 1,
+        // received BID + missed BID.
+        coin: 1,
+        unconfirmed: BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // Wallet only spends FEE
+      walletBalances.sentBalance = applyDelta(walletBalances.initialBalance, {
+        tx: 1,
+        // Total coins is: output -> BID output + CHANGE + Undiscovered BID
+        coin: 1,
+        // for now another bid just out transaction.
+        unconfirmed: -HARD_FEE - BLIND_AMOUNT,
+        ulocked: BLIND_AMOUNT
+      });
+
+      // NOW CONFIRM
+      defBalances.confirmedBalance = applyDelta(defBalances.sentBalance, {
+        confirmed: -HARD_FEE - (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.confirmedBalance = applyDelta(altBalances.sentBalance, {
+        confirmed: BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT
+      });
+
+      walletBalances.confirmedBalance = applyDelta(walletBalances.sentBalance, {
+        confirmed: -HARD_FEE - BLIND_AMOUNT,
+        clocked: BLIND_AMOUNT
+      });
+
+      // NOW Unconfirm again
+      defBalances.unconfirmedBalance = applyDelta(defBalances.confirmedBalance, {
+        confirmed: HARD_FEE + (BLIND_AMOUNT * 2)
+      });
+
+      altBalances.unconfirmedBalance = applyDelta(altBalances.confirmedBalance, {
+        confirmed: -BLIND_AMOUNT,
+        clocked: -BLIND_AMOUNT
+      });
+
+      walletBalances.unconfirmedBalance = applyDelta(walletBalances.confirmedBalance, {
+        confirmed: HARD_FEE + BLIND_AMOUNT,
+        clocked: -BLIND_AMOUNT
+      });
+
+      // NOW Erase
+      walletBalances.eraseBalance = walletBalances.initialBalance;
+      defBalances.eraseBalance = defBalances.initialBalance;
+      altBalances.eraseBalance = altBalances.initialBalance;
+
+      // Now we are aware of the output.
+      walletBalances.blockConfirmedBalance = applyDelta(walletBalances.eraseBalance, {
+        tx: 1,
+        // output -> BID + BID + CHANGE
+        coin: 2,
+
+        confirmed: -HARD_FEE,
+        unconfirmed: -HARD_FEE,
+
+        ulocked: BLIND_AMOUNT * 2,
+        clocked: BLIND_AMOUNT * 2
+      });
+      // Def balance does not change
+      defBalances.blockConfirmedBalance = defBalances.confirmedBalance;
+      altBalances.blockConfirmedBalance = applyDelta(altBalances.eraseBalance, {
+        tx: 1,
+        coin: 2,
+
+        confirmed: BLIND_AMOUNT * 2,
+        unconfirmed: BLIND_AMOUNT * 2,
+        ulocked: BLIND_AMOUNT * 2,
+        clocked: BLIND_AMOUNT * 2
+      });
+
+      walletBalances.blockUnconfirmedBalance = applyDelta(walletBalances.blockConfirmedBalance, {
+        confirmed: HARD_FEE,
+        clocked: -BLIND_AMOUNT * 2
+      });
+
+      defBalances.blockUnconfirmedBalance = defBalances.unconfirmedBalance;
+      altBalances.blockUnconfirmedBalance = applyDelta(altBalances.blockConfirmedBalance, {
+        confirmed: -BLIND_AMOUNT * 2,
+        clocked: -BLIND_AMOUNT * 2
+      });
+
+      await testCrossAcctBalance(
+        checkAllBalances(walletBalances, defBalances, altBalances),
+        altDiscover,
+        DISCOVER_TYPES.BEFORE_ERASE
+      );
+      await testCrossAcctBalance(
+        checkAllBalances(walletBalances, defBalances, altBalances),
+        altDiscover,
+        DISCOVER_TYPES.BEFORE_BLOCK_CONFIRM
+      );
+    });
+
+    it.skip('should track bid cross act (discover on block unconfirm)', async () => {});
   });
 });
