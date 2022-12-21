@@ -8,8 +8,7 @@ const WalletPlugin = require('../lib/wallet/plugin');
 const MTX = require('../lib/primitives/mtx');
 const Coin = require('../lib/primitives/coin');
 const Output = require('../lib/primitives/output');
-const rules = require('../lib/covenants/rules');
-// const {Resource} = require('../lib/dns/resource');
+const {Resource} = require('../lib/dns/resource');
 const {types, grindName} = require('../lib/covenants/rules');
 const {forEventCondition} = require('./util/common');
 
@@ -30,9 +29,9 @@ const phrases = mnemData.map(d => Mnemonic.fromPhrase(d[1]));
 
 const {
   treeInterval,
-  biddingPeriod
-  // revealPeriod,
-  // transferLockup
+  biddingPeriod,
+  revealPeriod,
+  transferLockup
 } = network.names;
 
 /**
@@ -154,9 +153,20 @@ const BID_AMOUNT_1 = BLIND_AMOUNT_1 / 4;
 const BLIND_ONLY_1 = BLIND_AMOUNT_1 - BID_AMOUNT_1;
 
 // second is winner.
-const BLIND_AMOUNT_2 = 3e6;
+const BLIND_AMOUNT_2 = 2e6;
 const BID_AMOUNT_2 = BLIND_AMOUNT_2 / 4;
 const BLIND_ONLY_2 = BLIND_AMOUNT_2 - BID_AMOUNT_2;
+
+// Loser balances for primary
+const FINAL_PRICE_1 = 1e5;
+const FINAL_PRICE_2 = 2e5; // less then 1e6/4 (2.5e5)
+
+// const BLIND_AMOUNT_3 = 3e6;
+// const BID_AMOUNT_3 = BLIND_AMOUNT_3 / 4;
+// const BLIND_ONLY_3 = BLIND_AMOUNT_3 - BID_AMOUNT_3;
+
+// Empty resource
+const EMPTY_RS = Resource.fromJSON({ records: [] });
 
 /*
  * Wallet helpers
@@ -185,34 +195,6 @@ async function resign(wallet, mtx) {
 
   await wallet.sign(mtx);
 };
-
-/*
- * MTX Helpers
- */
-
-function addRevealOutput(mtx, options) {
-  const {
-    name,
-    coin,
-    height,
-    value,
-    nonce
-  } = options;
-
-  const nameHash = rules.hashName(name);
-
-  mtx.addOutpoint(coin);
-
-  const output = new Output();
-  output.address = options.address ? options.address : coin.getAddress();
-  output.value = value;
-  output.covenant.type = types.REVEAL;
-  output.covenant.pushHash(nameHash);
-  output.covenant.pushU32(height);
-  output.covenant.pushHash(nonce);
-
-  mtx.addOutput(output);
-}
 
 /*
  * Balance helpers
@@ -246,7 +228,8 @@ describe('Wallet Balance', function() {
   let node, chain, wdb, genWallets = WALLET_N;;
 
   // wallets
-  let primary, walletIndex, allWallets = [];
+  // alt wallets are clones of allWallets to aid us in lookahead test.
+  let primary, walletIndex, allWallets = [], cloneWallets = [];
 
   /*
    * Contextual helpers
@@ -279,10 +262,13 @@ describe('Wallet Balance', function() {
     primary = await wdb.get('primary');
 
     allWallets = [];
+    cloneWallets = [];
     for (let i = 0; i < genWallets; i++) {
       const name = 'wallet' + i;
       const wallet = await wdb.create({ id: name, mnemonic: phrases[i] });
+      const clone = await wdb.create({ id: name + '-alt', mnemonic: phrases[i] });
       allWallets.push(wallet);
+      cloneWallets.push(clone);
     }
   };
 
@@ -311,9 +297,11 @@ describe('Wallet Balance', function() {
       throw new Error('There are not enough wallets, can not get at index: ' + i);
 
     return {
+      index: i,
       wallet: allWallets[i],
       wid: allWallets[i].id,
-      accountName: DEFAULT_ACCOUNT,
+      clone: cloneWallets[i],
+      cloneWID: cloneWallets[i].id,
       opts: {
         account: DEFAULT_ACCOUNT,
         hardFee: HARD_FEE
@@ -357,7 +345,7 @@ describe('Wallet Balance', function() {
   /**
    * @callback BalanceCheckFunction
    * @param {Wallet} wallet
-   * @param {Account} account
+   * @param {Wallet} clone
    * @param {Number} ahead
    * @param {Object} [opts]
    */
@@ -404,54 +392,53 @@ describe('Wallet Balance', function() {
 
   const balanceTest = (setupFn, receiveFn, ahead) => {
     return async (checks, discoverFn, discoverAt, opts = {}) => {
-      const {wallet, accountName} = getNextWallet();
-      const account = await wallet.getAccount(accountName);
+      const {wallet, clone} = getNextWallet();
 
       if (setupFn)
-        await setupFn(wallet, account, ahead, opts);
+        await setupFn(wallet, clone, ahead, opts);
 
-      await checks.initCheck(wallet, account, ahead, opts);
+      await checks.initCheck(wallet, ahead, opts);
 
-      await receiveFn(wallet, account, ahead, opts);
-      await checks.sentCheck(wallet, account, ahead, opts);
+      await receiveFn(wallet, clone, ahead, opts);
+      await checks.sentCheck(wallet, ahead, opts);
 
       if (discoverAt === BEFORE_CONFIRM)
-        await discoverFn(wallet, account, ahead, opts);
+        await discoverFn(wallet, ahead, opts);
 
       await mineBlocks(1);
-      await checks.confirmedCheck(wallet, account, ahead, opts);
+      await checks.confirmedCheck(wallet, ahead, opts);
 
       // now unconfirm
       if (discoverAt === BEFORE_UNCONFIRM)
-        await discoverFn(wallet, account, ahead, opts);
+        await discoverFn(wallet, ahead, opts);
 
       await wdb.revert(chain.tip.height - 1);
-      await checks.unconfirmedCheck(wallet, account, ahead, opts);
+      await checks.unconfirmedCheck(wallet, ahead, opts);
 
       // now erase
       if (discoverAt === BEFORE_ERASE)
-        await discoverFn(wallet, account, ahead, opts);
+        await discoverFn(wallet, ahead, opts);
 
-      await wallet.zap(accountName, 0);
-      await checks.eraseCheck(wallet, account, ahead, opts);
+      await wallet.zap(-1, 0);
+      await checks.eraseCheck(wallet, ahead, opts);
 
       if (discoverAt === BEFORE_BLOCK_CONFIRM)
-        await discoverFn(wallet, account, ahead, opts);
+        await discoverFn(wallet, ahead, opts);
 
       // Final look at full picture.
       await wdb.scan(chain.tip.height - 1);
-      await checks.blockConfirmCheck(wallet, account, ahead, opts);
+      await checks.blockConfirmCheck(wallet, ahead, opts);
 
       if (discoverAt === BEFORE_BLOCK_UNCONFIRM)
-        await discoverFn(wallet, account, ahead, opts);
+        await discoverFn(wallet, ahead, opts);
 
       // Unconfirm
       await wdb.revert(chain.tip.height - 1);
-      await checks.blockUnconfirmCheck(wallet, account, ahead, opts);
+      await checks.blockUnconfirmCheck(wallet, ahead, opts);
 
       // Clean up wallet.
       await wdb.scan(chain.tip.height - 1);
-      await checks.blockFinalConfirmCheck(wallet, account, ahead, opts);
+      await checks.blockFinalConfirmCheck(wallet, ahead, opts);
     };
   };
 
@@ -549,11 +536,11 @@ describe('Wallet Balance', function() {
     return balances;
   };
 
-  const defDiscover = async (wallet, account, ahead) => {
+  const defDiscover = async (wallet, ahead) => {
     await catchUpToAhead(wallet, DEFAULT_ACCOUNT, ahead);
   };
 
-  const altDiscover = async (wallet, account, ahead) => {
+  const altDiscover = async (wallet, ahead) => {
     await catchUpToAhead(wallet, ALT_ACCOUNT, ahead);
   };
 
@@ -589,6 +576,96 @@ describe('Wallet Balance', function() {
     it(`${name}, discover on block unconfirm`, genTestBody(BEFORE_ERASE));
   };
 
+  /**
+   * One to normal address.
+   * One in the future address
+   * These functions accumulate:
+   *   fees: 1 + 1 + 1?
+   *   coins: 2 + 1 + 1?
+   *   tx: 1 + 1 + 1?
+   *
+   * Missing 1 register.
+   */
+
+  const INIT_REGISTERED_BALANCE = applyDelta(INIT_BALANCE, {
+    tx: 3,
+    coin: 3,
+
+    // missing second FINAL_PRICE_2 register.
+    confirmed: -(HARD_FEE * 3) - FINAL_PRICE_2,
+    unconfirmed: -(HARD_FEE * 3) - FINAL_PRICE_2,
+
+    clocked: FINAL_PRICE_1,
+    ulocked: FINAL_PRICE_1
+  });
+
+  const setupTwoRegisteredNames = async (wallet, ahead, register = true) => {
+    const name1 = grindName(GRIND_NAME_LEN, chain.tip.height, network);
+    const name2 = grindName(GRIND_NAME_LEN, chain.tip.height, network);
+
+    const account = await wallet.getAccount(DEFAULT_ACCOUNT);
+    const {nextAddr} = getAheadAddr(account, ahead);
+
+    await primary.sendBatch([
+      ['OPEN', name1],
+      ['OPEN', name2]
+    ]);
+    await mineBlocks(openingPeriod);
+
+    const txOpts = { hardFee: HARD_FEE };
+
+    // all three bids are there.
+    const bidMTX = await wallet.createBatch([
+      ['BID', name1, BID_AMOUNT_1, BLIND_AMOUNT_1],
+      ['BID', name2, BID_AMOUNT_2, BLIND_AMOUNT_2]
+    ], txOpts);
+
+    assert.strictEqual(bidMTX.outputs[0].covenant.type, types.BID);
+    assert.strictEqual(bidMTX.outputs[1].covenant.type, types.BID);
+
+    bidMTX.outputs[1].address = nextAddr;
+    await resign(wallet, bidMTX);
+
+    // make sure clone knows ahead addrs.
+    await defDiscover(wallet, ahead * 2);
+
+    await node.mempool.addTX(bidMTX.toTX());
+
+    await mineBlocks(1);
+
+    assert(FINAL_PRICE_1 <= BID_AMOUNT_1);
+    assert(FINAL_PRICE_2 <= BID_AMOUNT_2);
+
+    // primary will lose
+    await primary.sendBid(name1, FINAL_PRICE_1, INIT_FUND);
+    await primary.sendBid(name2, FINAL_PRICE_2, INIT_FUND);
+
+    await mineBlocks(biddingPeriod - 1);
+
+    await primary.sendReveal(name1);
+    await primary.sendReveal(name2);
+
+    await wallet.sendBatch([
+      ['REVEAL', name1],
+      ['REVEAL', name2]
+    ], txOpts);
+
+    await mineBlocks(revealPeriod);
+
+    if (register !== false) {
+      await wallet.sendBatch([
+        ['UPDATE', name1, EMPTY_RS],
+        ['UPDATE', name2, EMPTY_RS]
+      ], {
+        hardFee: HARD_FEE
+      });
+
+      await mineBlocks(1);
+    }
+
+    return [name1, name2];
+  };
+
   describe('NONE -> NONE* (normal receive)', function() {
     before(() => {
       genWallets = 6;
@@ -597,8 +674,9 @@ describe('Wallet Balance', function() {
 
     after(afterAll);
 
-    const receive = async (wallet, account, ahead, opts) => {
+    const receive = async (wallet, clone, ahead) => {
       const recvAddr = await wallet.receiveAddress();
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const {nextAddr} = getAheadAddr(account, ahead);
 
       // Send one to the normal address
@@ -638,7 +716,7 @@ describe('Wallet Balance', function() {
 
     // Balances if we discovered from the beginning
     const DISCOVERED = {};
-    DISCOVERED.initialBalance = INIT_BALANCE;
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
     DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
       tx: 1,
       coin: 2,
@@ -674,8 +752,9 @@ describe('Wallet Balance', function() {
 
     let coins, nextAddr, receiveKey;
 
-    const setupTXFromFuture = async (wallet, account, ahead) => {
+    const setupTXFromFuture = async (wallet, clone, ahead) => {
       const recvAddr = await wallet.receiveAddress();
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const aheadAddr = getAheadAddr(account, ahead, wallet.master);
       nextAddr = aheadAddr.nextAddr;
       receiveKey = aheadAddr.receiveKey;
@@ -702,7 +781,7 @@ describe('Wallet Balance', function() {
       ];
     };
 
-    const receive = async (wallet, account, ahead) => {
+    const receive = async (wallet) => {
       const outAddr = await primary.receiveAddress();
       const changeAddr = await wallet.changeAddress();
 
@@ -808,8 +887,9 @@ describe('Wallet Balance', function() {
 
     after(afterAll);
 
-    const receive = async (wallet, account, ahead) => {
+    const receive = async (wallet, clone, ahead) => {
       const recvAddr = await wallet.receiveAddress();
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const aheadAddr = getAheadAddr(account, ahead, wallet.master);
       const nextAddr = aheadAddr.nextAddr;
       const receiveKey = aheadAddr.receiveKey;
@@ -876,8 +956,8 @@ describe('Wallet Balance', function() {
     });
 
     // Nothing changes for confirmed either. (Coins are spent in pending)
-    UNDISCOVERED.confirmedBalance = applyDelta(UNDISCOVERED.sentBalance, {});
-    UNDISCOVERED.unconfirmedBalance = applyDelta(UNDISCOVERED.confirmedBalance, {});
+    UNDISCOVERED.confirmedBalance = UNDISCOVERED.sentBalance;
+    UNDISCOVERED.unconfirmedBalance = UNDISCOVERED.confirmedBalance;
 
     // We no longer have two txs.
     UNDISCOVERED.eraseBalance = applyDelta(UNDISCOVERED.unconfirmedBalance, { tx: -2 });
@@ -999,7 +1079,8 @@ describe('Wallet Balance', function() {
       await mineBlocks(openingPeriod);
     };
 
-    const sendNormalBid = async (wallet, account, ahead) => {
+    const sendNormalBid = async (wallet, clone, ahead) => {
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const {nextAddr} = getAheadAddr(account, ahead);
       const txOpts = { hardFee: HARD_FEE };
 
@@ -1045,7 +1126,7 @@ describe('Wallet Balance', function() {
 
     // Balances if second BID was discovered right away.
     const DISCOVERED = {};
-    DISCOVERED.initialBalance = INIT_BALANCE;
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
     DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
       tx: 1,
       coin: 2,
@@ -1090,7 +1171,8 @@ describe('Wallet Balance', function() {
       await mineBlocks(openingPeriod);
     };
 
-    const sendForeignBid = async (wallet, account, ahead) => {
+    const sendForeignBid = async (wallet, clone, ahead) => {
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const recvAddr = await wallet.receiveAddress();
       const {nextAddr} = getAheadAddr(account, ahead);
       const txOpts = { hardFee: HARD_FEE };
@@ -1136,7 +1218,7 @@ describe('Wallet Balance', function() {
     UNDISCOVERED.blockUnconfirmedBalance = UNDISCOVERED.sentBalance;
 
     const DISCOVERED = {};
-    DISCOVERED.initialBalance = INIT_BALANCE;
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
     DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
       tx: 1,
       coin: 2,
@@ -1184,7 +1266,7 @@ describe('Wallet Balance', function() {
       await mineBlocks(openingPeriod);
     };
 
-    const sendCrossAcct = async (wallet, account, ahead) => {
+    const sendCrossAcct = async (wallet, clone, ahead) => {
       const txOpts = { hardFee: HARD_FEE };
       const altAccount = await wallet.getAccount(ALT_ACCOUNT);
 
@@ -1285,9 +1367,9 @@ describe('Wallet Balance', function() {
     const DISCOVERED_DEFAULT = {};
     const DISCOVERED_ALT = {};
 
-    DISCOVERED_WALLET.initialBalance = INIT_BALANCE;
-    DISCOVERED_DEFAULT.initialBalance = INIT_BALANCE;
-    DISCOVERED_ALT.initialBalance = NULL_BALANCE;
+    DISCOVERED_WALLET.initialBalance = UNDISCOVERED_WALLET.initialBalance;
+    DISCOVERED_DEFAULT.initialBalance = UNDISCOVERED_DEFAULT.initialBalance;
+    DISCOVERED_ALT.initialBalance = UNDISCOVERED_ALT.initialBalance;
 
     // sent from default to alt, default account does not lock
     DISCOVERED_DEFAULT.sentBalance = applyDelta(DISCOVERED_DEFAULT.initialBalance, {
@@ -1365,23 +1447,19 @@ describe('Wallet Balance', function() {
     after(afterAll);
 
     let name = null;
-    let receiveKey = null;
-    let height = 0;
-    let coins = [];
-    let blinds = [];
 
-    const setupRevealName = async (wallet, account, ahead) => {
+    const setupBidName = async (wallet, clone, ahead) => {
       name = grindName(GRIND_NAME_LEN, chain.tip.height, network);
       const txOpts = { hardFee: HARD_FEE };
+
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const next = getAheadAddr(account, ahead, wallet.master);
       const {nextAddr} = next;
-      receiveKey = next.receiveKey;
 
       await primary.sendOpen(name, false);
-      height = chain.tip.height + 1;
       await mineBlocks(openingPeriod);
 
-      const bidMTX = await wallet.createBatch([
+      const bidMTX = await clone.createBatch([
         ['BID', name, BID_AMOUNT_1, BLIND_AMOUNT_1],
         ['BID', name, BID_AMOUNT_2, BLIND_AMOUNT_2]
       ], txOpts);
@@ -1390,61 +1468,24 @@ describe('Wallet Balance', function() {
       assert.strictEqual(bidMTX.outputs[1].covenant.type, types.BID);
       bidMTX.outputs[1].address = nextAddr;
 
-      await resign(wallet, bidMTX);
+      await resign(clone, bidMTX);
 
-      coins = [
-        Coin.fromTX(bidMTX, 0, chain.tip.height + 1),
-        Coin.fromTX(bidMTX, 1, chain.tip.height + 1)
-      ];
-
-      blinds = [
-        bidMTX.outputs[0].covenant.getHash(3),
-        bidMTX.outputs[1].covenant.getHash(3)
-      ];
+      // Make sure we discover everything
+      await defDiscover(clone, ahead * 2);
 
       node.mempool.addTX(bidMTX.toTX());
       await forWTX(wallet.id, bidMTX.hash());
       await mineBlocks(biddingPeriod);
     };
 
-    const sendReveal = async (wallet, account, ahead) => {
-      const mtx = new MTX();
-
-      const nonces = [
-        (await wallet.getBlind(blinds[0])).nonce,
-        (await wallet.getBlind(blinds[1])).nonce
-      ];
-
-      addRevealOutput(mtx, {
-        name,
-        height,
-        coin: coins[0],
-        value: BID_AMOUNT_1,
-        nonce: nonces[0]
+    const sendReveal = async (wallet, clone, ahead) => {
+      await clone.sendReveal(name, {
+        hardFee: HARD_FEE
       });
-
-      addRevealOutput(mtx, {
-        name,
-        height,
-        coin: coins[1],
-        value: BID_AMOUNT_2,
-        nonce: nonces[1]
-      });
-
-      await mtx.fund(coins, {
-        hardFee: HARD_FEE,
-        changeAddress: await account.changeAddress()
-      });
-
-      await wallet.sign(mtx);
-      await mtx.signAsync(receiveKey);
-
-      node.mempool.addTX(mtx.toTX());
-      await forWTX(wallet.id, mtx.hash());
     };
 
     const AHEAD = 10;
-    const testReveal = balanceTest(setupRevealName, sendReveal, AHEAD);
+    const testReveal = balanceTest(setupBidName, sendReveal, AHEAD);
 
     const UNDISCOVERED = {};
     UNDISCOVERED.initialBalance = applyDelta(INIT_BALANCE, {
@@ -1482,19 +1523,7 @@ describe('Wallet Balance', function() {
     UNDISCOVERED.blockUnconfirmedBalance = UNDISCOVERED.unconfirmedBalance;
 
     const DISCOVERED = {};
-    DISCOVERED.initialBalance = applyDelta(INIT_BALANCE, {
-      tx: 1,
-      // out = BID + Unknown BID + CHANGE
-      coin: 1,
-
-      // one bid is unknown
-      confirmed: -HARD_FEE - BLIND_AMOUNT_2,
-      unconfirmed: -HARD_FEE - BLIND_AMOUNT_2,
-
-      // one bid is unknown
-      clocked: BLIND_AMOUNT_1,
-      ulocked: BLIND_AMOUNT_1
-    });
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
 
     // Now we receive REVEAL - which frees BLIND and only locks bid amount.
     DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
@@ -1555,7 +1584,7 @@ describe('Wallet Balance', function() {
     };
 
     // Now we sent two REVEALs to second account (one seen, one missed)
-    const sendReveal = async (wallet, account, ahead) => {
+    const sendReveal = async (wallet, clone, ahead) => {
       const altAccount = await wallet.getAccount(ALT_ACCOUNT);
       const recv = getAheadAddr(altAccount, -altAccount.lookahead);
       const next = getAheadAddr(altAccount, ahead);
@@ -1679,21 +1708,11 @@ describe('Wallet Balance', function() {
     const DISCOVERED_DEFAULT = {};
     const DISCOVERED_ALT = {};
 
-    DISCOVERED_WALLET.initialBalance = applyDelta(INIT_BALANCE, {
-      tx: 1,
-      coin: 2,
-
-      confirmed: -HARD_FEE,
-      unconfirmed: -HARD_FEE,
-
-      clocked: BLIND_AMOUNT_1 + BLIND_AMOUNT_2,
-      ulocked: BLIND_AMOUNT_1 + BLIND_AMOUNT_2
-    });
-
+    DISCOVERED_WALLET.initialBalance = UNDISCOVERED_WALLET.initialBalance;;
     // same as wallet at this stage.
-    DISCOVERED_DEFAULT.initialBalance = DISCOVERED_WALLET.initialBalance;
+    DISCOVERED_DEFAULT.initialBalance = UNDISCOVERED_DEFAULT.initialBalance;
     // empty at the start.
-    DISCOVERED_ALT.initialBalance = NULL_BALANCE;
+    DISCOVERED_ALT.initialBalance = UNDISCOVERED_ALT.initialBalance;
 
     // After REVEAL Transaction
     DISCOVERED_WALLET.sentBalance = applyDelta(DISCOVERED_WALLET.initialBalance, {
@@ -1791,7 +1810,8 @@ describe('Wallet Balance', function() {
       await mineBlocks(biddingPeriod);
     };
 
-    const sendReveal = async (wallet, account, ahead) => {
+    const sendReveal = async (wallet, clone, ahead) => {
+      const account = await wallet.getAccount(DEFAULT_ACCOUNT);
       const {nextAddr} = getAheadAddr(account, ahead);
       const recv = await wallet.receiveAddress();
 
@@ -1833,7 +1853,7 @@ describe('Wallet Balance', function() {
 
     // Balances if everyting was discovered from the begining.
     const DISCOVERED = {};
-    DISCOVERED.initialBalance = INIT_BALANCE;
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
     DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
       tx: 1,
       coin: 2,
@@ -1859,6 +1879,733 @@ describe('Wallet Balance', function() {
       tester: testForeignReveal,
       checker: checkBalances,
       discoverer: defDiscover
+    });
+  });
+
+  describe('REVEAL* -> REDEEM*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    /*
+     * TODO: Move this tests to the auction tests.
+     * - 1 normal -> redeem (loser)
+     * - 1 missed -> redeem (loser) - bid chain is missing until reve
+     */
+
+    let name1, name2;
+
+    const setupRevealNames = async (wallet, clone, ahead) => {
+      name1 = grindName(GRIND_NAME_LEN, chain.tip.height, network);
+      name2 = grindName(GRIND_NAME_LEN, chain.tip.height, network);
+
+      const cloneAccount = await clone.getAccount(DEFAULT_ACCOUNT);
+      const addr1 = getAheadAddr(cloneAccount, ahead);
+
+      await primary.sendBatch([
+        ['OPEN', name1],
+        ['OPEN', name2]
+      ]);
+      await mineBlocks(openingPeriod);
+
+      // primary will win
+      await primary.sendBid(name1, INIT_FUND, INIT_FUND);
+      await primary.sendBid(name2, INIT_FUND, INIT_FUND);
+
+      const txOpts = { hardFee: HARD_FEE };
+
+      // all three bids are there.
+      const bidMTX = await clone.createBatch([
+        ['BID', name1, BID_AMOUNT_1, BLIND_AMOUNT_1],
+        ['BID', name2, BID_AMOUNT_2, BLIND_AMOUNT_2]
+      ], txOpts);
+
+      assert.strictEqual(bidMTX.outputs[0].covenant.type, types.BID);
+      assert.strictEqual(bidMTX.outputs[1].covenant.type, types.BID);
+
+      bidMTX.outputs[1].address = addr1.nextAddr;
+      await resign(clone, bidMTX);
+
+      // make sure clone knows ahead addrs.
+      await defDiscover(clone, ahead * 2);
+
+      await node.mempool.addTX(bidMTX.toTX());
+      await mineBlocks(biddingPeriod);
+
+      await primary.sendReveal(name1);
+      await primary.sendReveal(name2);
+
+      await clone.sendBatch([
+        ['REVEAL', name1],
+        ['REVEAL', name2]
+      ], txOpts);
+
+      await mineBlocks(revealPeriod + 1);
+    };
+
+    const sendRedeems = async (wallet, clone, ahead) => {
+      await clone.sendBatch([
+        ['REDEEM', name1],
+        ['REDEEM', name2]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testRevealRedeems = balanceTest(setupRevealNames, sendRedeems, AHEAD);
+
+    const UNDISCOVERED = {};
+    UNDISCOVERED.initialBalance = applyDelta(INIT_BALANCE, {
+      // 1 for bid, 1 for reveal.
+      tx: 2,
+
+      // (1 coin -> 1 change = 0) + 1 change + 1 reveal
+      coin: 2,
+
+      // Does not know about 1 reveal, so it is an out.
+      confirmed: -(HARD_FEE * 2) - BID_AMOUNT_2,
+      unconfirmed: -(HARD_FEE * 2) - BID_AMOUNT_2,
+
+      // only aware of single reveal.
+      clocked: BID_AMOUNT_1,
+      ulocked: BID_AMOUNT_1
+    });
+
+    UNDISCOVERED.sentBalance = applyDelta(UNDISCOVERED.initialBalance, {
+      // redeem tx
+      tx: 1,
+
+      coin: 0,
+
+      unconfirmed: -HARD_FEE,
+      ulocked: -BID_AMOUNT_1
+    });
+
+    UNDISCOVERED.confirmedBalance = applyDelta(UNDISCOVERED.sentBalance, {
+      confirmed: -HARD_FEE,
+      clocked: -BID_AMOUNT_1
+    });
+
+    UNDISCOVERED.unconfirmedBalance = UNDISCOVERED.sentBalance;
+    UNDISCOVERED.eraseBalance = UNDISCOVERED.initialBalance;
+    UNDISCOVERED.blockConfirmedBalance = UNDISCOVERED.confirmedBalance;
+    UNDISCOVERED.blockUnconfirmedBalance = UNDISCOVERED.unconfirmedBalance;
+
+    const DISCOVERED = {};
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
+
+    DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
+      tx: 1,
+      coin: 1,
+      unconfirmed: -HARD_FEE + BID_AMOUNT_2,
+      ulocked: -BID_AMOUNT_1
+    });
+
+    DISCOVERED.confirmedBalance = applyDelta(DISCOVERED.sentBalance, {
+      confirmed: -HARD_FEE + BID_AMOUNT_2,
+      clocked: -BID_AMOUNT_1
+    });
+
+    DISCOVERED.unconfirmedBalance = DISCOVERED.sentBalance;
+    DISCOVERED.eraseBalance = DISCOVERED.initialBalance;
+    DISCOVERED.blockConfirmedBalance = DISCOVERED.confirmedBalance;
+    DISCOVERED.blockUnconfirmedBalance = DISCOVERED.unconfirmedBalance;
+
+    genTests({
+      name: 'should send/receive reveal->redeem',
+      undiscovered: UNDISCOVERED,
+      discovered: DISCOVERED,
+      tester: testRevealRedeems,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  describe('REVEAL* -> REGISTER*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    /*
+     * TODO: Move this tests to the auction tests.
+     * - 1 normal -> register (WINNER)
+     * - 1 missed -> register (WINNER) - bid chain is missing until reve
+     */
+
+    let name1, name2;
+
+    const setupRevealNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead, false);
+
+      name1 = names[0];
+      name2 = names[1];
+    };
+
+    const sendRedeems = async (wallet, clone, ahead) => {
+      await clone.sendBatch([
+        ['UPDATE', name1, EMPTY_RS],
+        ['UPDATE', name2, EMPTY_RS]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testRevealRedeems = balanceTest(setupRevealNames, sendRedeems, AHEAD);
+
+    const UNDISCOVERED = {};
+    UNDISCOVERED.initialBalance = applyDelta(INIT_BALANCE, {
+      // 1 for bid, 1 for reveal.
+      tx: 2,
+
+      // (1 coin -> 1 change = 0) + 1 change + 1 reveal
+      coin: 2,
+
+      // Does not know about 1 reveal, so it is an out.
+      confirmed: -(HARD_FEE * 2) - BID_AMOUNT_2,
+      unconfirmed: -(HARD_FEE * 2) - BID_AMOUNT_2,
+
+      // only aware of single reveal.
+      clocked: BID_AMOUNT_1,
+      ulocked: BID_AMOUNT_1
+    });
+
+    UNDISCOVERED.sentBalance = applyDelta(UNDISCOVERED.initialBalance, {
+      // register tx
+      tx: 1,
+      // additional change for REGISTER tx.
+      coin: 1,
+
+      // BID_AMOUNT_2 was returned via change
+      // only finalPrice2 is not accounted for.
+      unconfirmed: -HARD_FEE + BID_AMOUNT_2 - FINAL_PRICE_2,
+      ulocked: -BID_AMOUNT_1 + FINAL_PRICE_1
+    });
+
+    UNDISCOVERED.confirmedBalance = applyDelta(UNDISCOVERED.sentBalance, {
+      confirmed: -HARD_FEE + BID_AMOUNT_2 - FINAL_PRICE_2,
+      clocked: -BID_AMOUNT_1 + FINAL_PRICE_1
+    });
+
+    UNDISCOVERED.unconfirmedBalance = UNDISCOVERED.sentBalance;
+    UNDISCOVERED.eraseBalance = UNDISCOVERED.initialBalance;
+    UNDISCOVERED.blockConfirmedBalance = UNDISCOVERED.confirmedBalance;
+    UNDISCOVERED.blockUnconfirmedBalance = UNDISCOVERED.unconfirmedBalance;
+
+    const DISCOVERED = {};
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
+
+    DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
+      tx: 1,
+      coin: 2,
+      unconfirmed: -HARD_FEE + BID_AMOUNT_2,
+      ulocked: -BID_AMOUNT_1 + FINAL_PRICE_1 + FINAL_PRICE_2
+    });
+
+    DISCOVERED.confirmedBalance = applyDelta(DISCOVERED.sentBalance, {
+      confirmed: -HARD_FEE + BID_AMOUNT_2,
+      clocked: -BID_AMOUNT_1 + FINAL_PRICE_1 + FINAL_PRICE_2
+    });
+
+    DISCOVERED.unconfirmedBalance = DISCOVERED.sentBalance;
+    DISCOVERED.eraseBalance = DISCOVERED.initialBalance;
+    DISCOVERED.blockConfirmedBalance = DISCOVERED.confirmedBalance;
+    DISCOVERED.blockUnconfirmedBalance = DISCOVERED.unconfirmedBalance;
+
+    genTests({
+      name: 'should send/receive reveal->register',
+      undiscovered: UNDISCOVERED,
+      discovered: DISCOVERED,
+      tester: testRevealRedeems,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  /*
+   * All updates types have the same accounting outcomes
+   */
+
+  const UPDATE_UNDISCOVERED = {};
+  UPDATE_UNDISCOVERED.initialBalance = INIT_REGISTERED_BALANCE;
+  UPDATE_UNDISCOVERED.sentBalance = applyDelta(UPDATE_UNDISCOVERED.initialBalance, {
+    tx: 1,
+    unconfirmed: -HARD_FEE
+  });
+
+  UPDATE_UNDISCOVERED.confirmedBalance = applyDelta(UPDATE_UNDISCOVERED.sentBalance, {
+    confirmed: -HARD_FEE
+  });
+
+  UPDATE_UNDISCOVERED.unconfirmedBalance = UPDATE_UNDISCOVERED.sentBalance;
+  UPDATE_UNDISCOVERED.eraseBalance = UPDATE_UNDISCOVERED.initialBalance;
+  UPDATE_UNDISCOVERED.blockConfirmedBalance = UPDATE_UNDISCOVERED.confirmedBalance;
+  UPDATE_UNDISCOVERED.blockUnconfirmedBalance = UPDATE_UNDISCOVERED.unconfirmedBalance;
+
+  const UPDATE_DISCOVERED = {};
+  UPDATE_DISCOVERED.initialBalance = UPDATE_UNDISCOVERED.initialBalance;
+
+  UPDATE_DISCOVERED.sentBalance = applyDelta(UPDATE_DISCOVERED.initialBalance, {
+    tx: 1,
+    // discovers the unknown update
+    coin: 1,
+
+    unconfirmed: -HARD_FEE + FINAL_PRICE_2,
+    ulocked: FINAL_PRICE_2
+  });
+
+  UPDATE_DISCOVERED.confirmedBalance = applyDelta(UPDATE_DISCOVERED.sentBalance, {
+    confirmed: -HARD_FEE + FINAL_PRICE_2,
+    clocked: FINAL_PRICE_2
+  });
+
+  UPDATE_DISCOVERED.unconfirmedBalance = UPDATE_DISCOVERED.sentBalance;
+  UPDATE_DISCOVERED.eraseBalance = UPDATE_DISCOVERED.initialBalance;
+  UPDATE_DISCOVERED.blockConfirmedBalance = UPDATE_DISCOVERED.confirmedBalance;
+  UPDATE_DISCOVERED.blockUnconfirmedBalance = UPDATE_DISCOVERED.unconfirmedBalance;
+
+  describe('REGISTER* -> UPDATE*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupRegisteredNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+    };
+
+    const sendUpdates = async (wallet, clone) => {
+      await clone.sendBatch([
+        ['UPDATE', name1, EMPTY_RS],
+        ['UPDATE', name2, EMPTY_RS]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendUpdate = balanceTest(setupRegisteredNames, sendUpdates, AHEAD);
+
+    genTests({
+      name: 'should send/receive register->update',
+      undiscovered: UPDATE_UNDISCOVERED,
+      discovered: UPDATE_DISCOVERED,
+      tester: testSendUpdate,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  // NOTE: Revokes are permanently burned coins, should we discount them from
+  // balance and UTXO set? (moved to burned balance)
+  describe('REGISTER/UPDATE* -> REVOKE*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupRegisteredNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+    };
+
+    const sendRevokes = async (wallet, clone) => {
+      await clone.sendBatch([
+        ['REVOKE', name1],
+        ['REVOKE', name2]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendRevokes = balanceTest(setupRegisteredNames, sendRevokes, AHEAD);
+
+    genTests({
+      name: 'should send/receive register->revoke',
+      undiscovered: UPDATE_UNDISCOVERED,
+      discovered: UPDATE_DISCOVERED,
+      tester: testSendRevokes,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  describe('REGISTER/UPDATE* -> RENEW*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupRegisteredNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+    };
+
+    const sendRenews = async (wallet, clone) => {
+      await mineBlocks(treeInterval);
+      await clone.sendBatch([
+        ['RENEW', name1],
+        ['RENEW', name2]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendRenews = balanceTest(setupRegisteredNames, sendRenews, AHEAD);
+
+    genTests({
+      name: 'should send/receive register->renew',
+      undiscovered: UPDATE_UNDISCOVERED,
+      discovered: UPDATE_DISCOVERED,
+      tester: testSendRenews,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  describe('REGISTER/UPDATE* -> TRANSFER*', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupRegisteredNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+    };
+
+    const sendTransfers = async (wallet, clone) => {
+      await clone.sendBatch([
+        ['TRANSFER', name1, await primary.receiveAddress()],
+        ['TRANSFER', name2, await primary.receiveAddress()]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendTransfer = balanceTest(setupRegisteredNames, sendTransfers, AHEAD);
+
+    genTests({
+      name: 'should send/receive register->renew',
+      undiscovered: UPDATE_UNDISCOVERED,
+      discovered: UPDATE_DISCOVERED,
+      tester: testSendTransfer,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  describe('TRANSFER* -> FINALIZE', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupTransferNames = async (wallet, clone, ahead) => {
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+
+      await clone.sendBatch([
+        ['TRANSFER', name1, await primary.receiveAddress()],
+        ['TRANSFER', name2, await primary.receiveAddress()]
+      ], {
+        hardFee: HARD_FEE
+      });
+
+      await mineBlocks(transferLockup);
+    };
+
+    const sendFinalizes = async (wallet, clone) => {
+      await clone.sendBatch([
+        ['FINALIZE', name1],
+        ['FINALIZE', name2]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendFinalizes = balanceTest(setupTransferNames, sendFinalizes, AHEAD);
+
+    const UNDISCOVERED = {};
+    UNDISCOVERED.initialBalance = applyDelta(INIT_REGISTERED_BALANCE, {
+      // we sent TRANSFER
+      tx: 1,
+      confirmed: -HARD_FEE,
+      unconfirmed: -HARD_FEE
+    });
+
+    UNDISCOVERED.sentBalance = applyDelta(UNDISCOVERED.initialBalance, {
+      tx: 1,
+      coin: -1,
+      unconfirmed: -FINAL_PRICE_1 - HARD_FEE,
+      ulocked: -FINAL_PRICE_1
+    });
+
+    UNDISCOVERED.confirmedBalance = applyDelta(UNDISCOVERED.sentBalance, {
+      confirmed: -FINAL_PRICE_1 - HARD_FEE,
+      clocked: -FINAL_PRICE_1
+    });
+
+    UNDISCOVERED.unconfirmedBalance = UNDISCOVERED.sentBalance;
+    UNDISCOVERED.eraseBalance = UNDISCOVERED.initialBalance;
+    UNDISCOVERED.blockConfirmedBalance = UNDISCOVERED.confirmedBalance;
+    UNDISCOVERED.blockUnconfirmedBalance = UNDISCOVERED.unconfirmedBalance;
+
+    const DISCOVERED = {};
+    DISCOVERED.initialBalance = UNDISCOVERED.initialBalance;
+    DISCOVERED.sentBalance = applyDelta(DISCOVERED.initialBalance, {
+      tx: 1,
+      coin: -1,
+
+      // Because we only discover when it's outgoing, it wont affect our balance.
+      unconfirmed: -FINAL_PRICE_1 - HARD_FEE,
+      ulocked: -FINAL_PRICE_1
+    });
+
+    DISCOVERED.confirmedBalance = applyDelta(DISCOVERED.sentBalance, {
+      confirmed: -FINAL_PRICE_1 - HARD_FEE,
+      clocked: -FINAL_PRICE_1
+    });
+
+    DISCOVERED.unconfirmedBalance = DISCOVERED.sentBalance;
+    DISCOVERED.eraseBalance = DISCOVERED.initialBalance;
+    DISCOVERED.blockConfirmedBalance = DISCOVERED.confirmedBalance;
+    DISCOVERED.blockUnconfirmedBalance = DISCOVERED.unconfirmedBalance;
+
+    genTests({
+      name: 'should send finalize',
+      undiscovered: UNDISCOVERED,
+      discovered: DISCOVERED,
+      tester: testSendFinalizes,
+      checker: checkBalances,
+      discoverer: defDiscover
+    });
+  });
+
+  describe('TRANSFER* -> FINALIZE* (cross acct)', function() {
+    before(() => {
+      genWallets = 6;
+      return beforeAll();
+    });
+
+    after(afterAll);
+
+    let name1, name2;
+
+    const setupTransferNames = async (wallet, clone, ahead) => {
+      await wallet.createAccount({
+        name: ALT_ACCOUNT
+      });
+
+      const altAccount = await wallet.getAccount(ALT_ACCOUNT);
+      const recv = await wallet.receiveAddress(ALT_ACCOUNT);
+      const {nextAddr} = getAheadAddr(altAccount, ahead);
+
+      const names = await setupTwoRegisteredNames(clone, ahead);
+
+      name1 = names[0];
+      name2 = names[1];
+
+      await clone.sendBatch([
+        ['TRANSFER', name1, recv],
+        ['TRANSFER', name2, nextAddr]
+      ], {
+        hardFee: HARD_FEE
+      });
+
+      await mineBlocks(transferLockup);
+    };
+
+    const sendFinalizes = async (wallet, clone) => {
+      await clone.sendBatch([
+        ['FINALIZE', name1],
+        ['FINALIZE', name2]
+      ], {
+        hardFee: HARD_FEE
+      });
+    };
+
+    const AHEAD = 10;
+    const testSendFinalizes = balanceTest(setupTransferNames, sendFinalizes, AHEAD);
+
+    const UNDISCOVERED_WALLET = {};
+    const UNDISCOVERED_DEFAULT = {};
+    const UNDISCOVERED_ALT = {};
+
+    UNDISCOVERED_WALLET.initialBalance = applyDelta(INIT_REGISTERED_BALANCE, {
+      // we sent TRANSFER
+      tx: 1,
+      confirmed: -HARD_FEE,
+      unconfirmed: -HARD_FEE
+    });
+
+    UNDISCOVERED_DEFAULT.initialBalance = UNDISCOVERED_WALLET.initialBalance;
+    UNDISCOVERED_ALT.initialBalance = NULL_BALANCE;
+
+    UNDISCOVERED_WALLET.sentBalance = applyDelta(UNDISCOVERED_WALLET.initialBalance, {
+      tx: 1,
+      // default sent to alt.
+      coin: 0,
+
+      unconfirmed: -HARD_FEE
+    });
+
+    UNDISCOVERED_DEFAULT.sentBalance = applyDelta(UNDISCOVERED_DEFAULT.initialBalance, {
+      tx: 1,
+      coin: -1,
+      unconfirmed: -FINAL_PRICE_1 - HARD_FEE,
+      ulocked: -FINAL_PRICE_1
+    });
+
+    UNDISCOVERED_ALT.sentBalance = applyDelta(UNDISCOVERED_ALT.initialBalance, {
+      tx: 1,
+      coin: 1,
+
+      unconfirmed: FINAL_PRICE_1,
+      ulocked: FINAL_PRICE_1
+    });
+
+    UNDISCOVERED_WALLET.confirmedBalance = applyDelta(UNDISCOVERED_WALLET.sentBalance, {
+      confirmed: -HARD_FEE
+    });
+
+    UNDISCOVERED_DEFAULT.confirmedBalance = applyDelta(UNDISCOVERED_DEFAULT.sentBalance, {
+      confirmed: -FINAL_PRICE_1 - HARD_FEE,
+      clocked: -FINAL_PRICE_1
+    });
+
+    UNDISCOVERED_ALT.confirmedBalance = applyDelta(UNDISCOVERED_ALT.sentBalance, {
+      confirmed: FINAL_PRICE_1,
+      clocked: FINAL_PRICE_1
+    });
+
+    UNDISCOVERED_WALLET.unconfirmedBalance = UNDISCOVERED_WALLET.sentBalance;
+    UNDISCOVERED_WALLET.eraseBalance = UNDISCOVERED_WALLET.initialBalance;
+    UNDISCOVERED_WALLET.blockConfirmedBalance = UNDISCOVERED_WALLET.confirmedBalance;
+    UNDISCOVERED_WALLET.blockUnconfirmedBalance = UNDISCOVERED_WALLET.unconfirmedBalance;
+
+    UNDISCOVERED_DEFAULT.unconfirmedBalance = UNDISCOVERED_DEFAULT.sentBalance;
+    UNDISCOVERED_DEFAULT.eraseBalance = UNDISCOVERED_DEFAULT.initialBalance;
+    UNDISCOVERED_DEFAULT.blockConfirmedBalance = UNDISCOVERED_DEFAULT.confirmedBalance;
+    UNDISCOVERED_DEFAULT.blockUnconfirmedBalance = UNDISCOVERED_DEFAULT.unconfirmedBalance;
+
+    UNDISCOVERED_ALT.unconfirmedBalance = UNDISCOVERED_ALT.sentBalance;
+    UNDISCOVERED_ALT.eraseBalance = UNDISCOVERED_ALT.initialBalance;
+    UNDISCOVERED_ALT.blockConfirmedBalance = UNDISCOVERED_ALT.confirmedBalance;
+    UNDISCOVERED_ALT.blockUnconfirmedBalance = UNDISCOVERED_ALT.unconfirmedBalance;
+
+    const DISCOVERED_WALLET = {};
+    const DISCOVERED_DEFAULT = {};
+    const DISCOVERED_ALT = {};
+
+    DISCOVERED_WALLET.initialBalance = UNDISCOVERED_WALLET.initialBalance;
+    DISCOVERED_DEFAULT.initialBalance = UNDISCOVERED_DEFAULT.initialBalance;
+    DISCOVERED_ALT.initialBalance = UNDISCOVERED_ALT.initialBalance;
+
+    DISCOVERED_WALLET.sentBalance = applyDelta(DISCOVERED_WALLET.initialBalance, {
+      tx: 1,
+      // we discover receiving finalize
+      coin: 1,
+
+      unconfirmed: -HARD_FEE + FINAL_PRICE_2,
+      ulocked: FINAL_PRICE_2
+    });
+
+    DISCOVERED_DEFAULT.sentBalance = applyDelta(DISCOVERED_DEFAULT.initialBalance, {
+      tx: 1,
+      coin: -1,
+
+      unconfirmed: -FINAL_PRICE_1 - HARD_FEE,
+      ulocked: -FINAL_PRICE_1
+    });
+
+    DISCOVERED_ALT.sentBalance = applyDelta(DISCOVERED_ALT.initialBalance, {
+      tx: 1,
+      coin: 2,
+
+      unconfirmed: FINAL_PRICE_1 + FINAL_PRICE_2,
+      ulocked: FINAL_PRICE_1 + FINAL_PRICE_2
+    });
+
+    DISCOVERED_WALLET.confirmedBalance = applyDelta(DISCOVERED_WALLET.sentBalance, {
+      confirmed: -HARD_FEE + FINAL_PRICE_2,
+      clocked: FINAL_PRICE_2
+    });
+
+    DISCOVERED_DEFAULT.confirmedBalance = applyDelta(DISCOVERED_DEFAULT.sentBalance, {
+      confirmed: -FINAL_PRICE_1 - HARD_FEE,
+      clocked: -FINAL_PRICE_1
+    });
+
+    DISCOVERED_ALT.confirmedBalance = applyDelta(DISCOVERED_ALT.sentBalance, {
+      confirmed: FINAL_PRICE_1 + FINAL_PRICE_2,
+      clocked: FINAL_PRICE_1 + FINAL_PRICE_2
+    });
+
+    DISCOVERED_WALLET.unconfirmedBalance = DISCOVERED_WALLET.sentBalance;
+    DISCOVERED_WALLET.eraseBalance = DISCOVERED_WALLET.initialBalance;
+    DISCOVERED_WALLET.blockConfirmedBalance = DISCOVERED_WALLET.confirmedBalance;
+    DISCOVERED_WALLET.blockUnconfirmedBalance = DISCOVERED_WALLET.unconfirmedBalance;
+
+    DISCOVERED_DEFAULT.unconfirmedBalance = DISCOVERED_DEFAULT.sentBalance;
+    DISCOVERED_DEFAULT.eraseBalance = DISCOVERED_DEFAULT.initialBalance;
+    DISCOVERED_DEFAULT.blockConfirmedBalance = DISCOVERED_DEFAULT.confirmedBalance;
+    DISCOVERED_DEFAULT.blockUnconfirmedBalance = DISCOVERED_DEFAULT.unconfirmedBalance;
+
+    DISCOVERED_ALT.unconfirmedBalance = DISCOVERED_ALT.sentBalance;
+    DISCOVERED_ALT.eraseBalance = DISCOVERED_ALT.initialBalance;
+    DISCOVERED_ALT.blockConfirmedBalance = DISCOVERED_ALT.confirmedBalance;
+    DISCOVERED_ALT.blockUnconfirmedBalance = DISCOVERED_ALT.unconfirmedBalance;
+
+    genTests({
+      name: 'should send finalize (cross acct)',
+      undiscovered: [UNDISCOVERED_WALLET, UNDISCOVERED_DEFAULT, UNDISCOVERED_ALT],
+      discovered: [DISCOVERED_WALLET, DISCOVERED_DEFAULT, DISCOVERED_ALT],
+      tester: testSendFinalizes,
+      checker: checkBalances,
+      discoverer: altDiscover
     });
   });
 });
