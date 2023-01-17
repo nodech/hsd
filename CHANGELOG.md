@@ -23,6 +23,8 @@ to these calls.
 
 - HTTP Changes:
   - Wallet and account create methods now accept `lookahead` values up to `2^32 - 1`.
+  - Create account is now: `POST /wallet/:id/account/:account` instead of `PUT /wallet/:id/account/:account`.
+  - Introduce new API to modify account: `PUT /wallet/:id/account/:account`. (old create)
 
 - New RPC methods:
   - `createbatch` and `sendbatch` create batch transactions with any number
