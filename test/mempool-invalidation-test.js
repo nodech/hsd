@@ -3,12 +3,12 @@
 const assert = require('bsert');
 const {BufferMap} = require('buffer-map');
 const Network = require('../lib/protocol/network');
-const FullNode = require('../lib/node/fullnode');
 const {ownership} = require('../lib/covenants/ownership');
 const rules = require('../lib/covenants/rules');
 const {states} = require('../lib/covenants/namestate');
 const {Resource} = require('../lib/dns/resource');
 const {forEvent} = require('./util/common');
+const NodeContext = require('./util/node');
 
 const network = Network.get('regtest');
 const {
@@ -37,40 +37,41 @@ describe('Mempool Invalidation', function() {
 
   describe('Covenant invalidation (Integration)', function() {
     this.timeout(3000);
+    let nodeCtx;
     let node, wallet, wallet2;
 
     const getNameState = async (name) => {
-      const ns = await node.chain.db.getNameStateByName(name);
+      const ns = await nodeCtx.chain.db.getNameStateByName(name);
 
       if (!ns)
         return null;
 
-      return ns.state(node.chain.tip.height + 1, network);
+      return ns.state(nodeCtx.chain.tip.height + 1, network);
     };
 
     const isExpired = async (name) => {
-      const ns = await node.chain.db.getNameStateByName(name);
+      const ns = await nodeCtx.chain.db.getNameStateByName(name);
 
       if (!ns)
         return true;
 
-      return ns.isExpired(node.chain.tip.height + 1, network);
+      return ns.isExpired(nodeCtx.chain.tip.height + 1, network);
     };
 
     before(async () => {
       network.names.renewalWindow = 200;
 
-      node = new FullNode({
+      nodeCtx = new NodeContext({
+        network: 'regtest',
         memory: true,
-        network: network.type,
-        plugins: [require('../lib/wallet/plugin')]
+        wallet: true
       });
 
-      await node.ensure();
-      await node.open();
+      await nodeCtx.open();
 
-      const walletPlugin = node.require('walletdb');
-      const wdb = walletPlugin.wdb;
+      node = nodeCtx.node;
+
+      const wdb = nodeCtx.wdb;
       wallet = await wdb.get('primary');
       wallet2 = await wdb.create({
         id: 'secondary'
@@ -82,7 +83,7 @@ describe('Mempool Invalidation', function() {
       for (let i = 0; i < treeInterval; i++)
         await mineBlock(node);
 
-      const fundTX = forEvent(node.mempool, 'tx', 1, 2000);
+      const fundTX = forEvent(nodeCtx.mempool, 'tx', 1, 2000);
       const w2addr = (await wallet2.receiveAddress('default')).toString();
 
       await wallet.send({
@@ -104,7 +105,8 @@ describe('Mempool Invalidation', function() {
 
     after(async () => {
       network.names.renewalWindow = ACTUAL_RENEWAL_WINDOW;
-      await node.close();
+      await nodeCtx.close();
+      await nodeCtx.destroy();
     });
 
     it('should invalidate opens', async () => {
@@ -330,26 +332,26 @@ describe('Mempool Invalidation', function() {
   describe('Claim Invalidation (Integration)', function() {
     this.timeout(50000);
 
+    let nodeCtx;
     let node, wallet;
 
     // copy names
     const TEST_CLAIMS = NAMES.slice();
 
     before(async () => {
-      node = new FullNode({
-        memory: true,
+      nodeCtx = new NodeContext({
         network: network.type,
-        plugins: [require('../lib/wallet/plugin')]
+        memory: true,
+        wallet: true
       });
 
-      await node.ensure();
-      await node.open();
+      await nodeCtx.open();
+      node = nodeCtx.node;
 
       // Ignore claim validation
       ownership.ignore = true;
 
-      const walletPlugin = node.require('walletdb');
-      const wdb = walletPlugin.wdb;
+      const wdb = nodeCtx.wdb;
       wallet = await wdb.get('primary');
 
       const addr = await wallet.receiveAddress('default');
@@ -365,7 +367,8 @@ describe('Mempool Invalidation', function() {
     after(async () => {
       network.names.claimPeriod = ACTUAL_CLAIM_PERIOD;
 
-      await node.close();
+      await nodeCtx.close();
+      await nodeCtx.destroy();
     });
 
     it('should mine an interval', async () => {
@@ -433,26 +436,26 @@ describe('Mempool Invalidation', function() {
   describe('Claim Invalidation on reorg (Integration)', function() {
     this.timeout(50000);
 
+    let nodeCtx;
     let node, wallet;
 
     // copy names
     const TEST_CLAIMS = NAMES.slice();
 
     before(async () => {
-      node = new FullNode({
-        memory: true,
+      nodeCtx = new NodeContext({
         network: network.type,
-        plugins: [require('../lib/wallet/plugin')]
+        memory: true,
+        wallet: true
       });
 
-      await node.ensure();
-      await node.open();
+      await nodeCtx.open();
 
       // Ignore claim validation
       ownership.ignore = true;
 
-      const walletPlugin = node.require('walletdb');
-      const wdb = walletPlugin.wdb;
+      node = nodeCtx.node;
+      const wdb = nodeCtx.wdb;
       wallet = await wdb.get('primary');
 
       const addr = await wallet.receiveAddress('default');
@@ -468,7 +471,8 @@ describe('Mempool Invalidation', function() {
     after(async () => {
       network.names.claimPeriod = ACTUAL_CLAIM_PERIOD;
 
-      await node.close();
+      await nodeCtx.close();
+      await nodeCtx.destroy();
     });
 
     it('should mine an interval', async () => {
