@@ -5,7 +5,13 @@
 **When upgrading to this version of hsd, you must pass `--wallet-migrate=3` when
 you run it for the first time.**
 
-### Wallet Changes:
+### Primitives
+- TX Changes:
+  - tx.test no longer updates the filter.
+  - Introduce TX.testAndMaybeUpdate method for potentially updating filter while
+    testing. (old tx.test)
+
+### Wallet Changes
 #### Configuration
   Wallet now has option `wallet-migrate-no-rescan`/`migrate-no-rescan` if you
 want to disable rescan when migration recommends it. It may result in the
