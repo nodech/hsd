@@ -11,6 +11,20 @@ you run it for the first time.**
   - Introduce TX.testAndMaybeUpdate method for potentially updating filter while
     testing. (old tx.test)
 
+### Node changes
+  Add support for the interactive rescan, that allows more control over rescan
+process and allows parallel rescans.
+
+- HTTP Changes:
+  - Introduce `scan interactive` hook (start, filter)
+
+### Node HTTP Client:
+  - Introduce `scanInteractive` method that starts interactive rescan.
+    - expects ws hook for `block rescan interactive` params `rawEntry, rawTXs`
+      that returns scanAction.
+    - expects ws hook for `block rescan interactive abort` param `message`.
+
+
 ### Wallet Changes
 #### Configuration
   Wallet now has option `wallet-migrate-no-rescan`/`migrate-no-rescan` if you
