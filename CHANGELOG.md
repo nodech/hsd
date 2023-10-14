@@ -21,7 +21,7 @@ process and allows parallel rescans.
 ### Node HTTP Client:
   - Introduce `scanInteractive` method that starts interactive rescan.
     - expects ws hook for `block rescan interactive` params `rawEntry, rawTXs`
-      that returns scanAction.
+      that returns scanAction object.
     - expects ws hook for `block rescan interactive abort` param `message`.
 
 
