@@ -16,7 +16,7 @@ jobs:
         node-version: 18.x
 
     - name: Install dependencies
-      run: npm install --location=global bslint @hns-dev/bsdoc
+      run: npm install bslint @hns-dev/bsdoc
 
     - name: Lint
       run: npm run lint
