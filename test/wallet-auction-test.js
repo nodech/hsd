@@ -1004,6 +1004,27 @@ describe('Wallet Auction', function() {
       assert.strictEqual(mtx.outputs.length, 3);
     });
 
+    it('should not broadcast tx if client is signal is aborted', async () => {
+      let err;
+      try {
+        await wallet.sendBatch(
+          [
+            { type: 'OPEN', args: [name1] },
+            { type: 'OPEN', args: [name2] },
+            { type: 'OPEN', args: [name3] }
+          ],
+          {
+            signal: AbortSignal.abort(new Error('Aborted by user.'))
+          }
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      assert(err);
+      assert.strictEqual(err.message, 'Aborted by user.');
+    });
+
     describe('Complete auction and diverse-action batches', function() {
       const addr = Address.fromProgram(0, Buffer.alloc(20, 0x01)).toString('regtest');
 
