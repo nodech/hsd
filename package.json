@@ -17,7 +17,7 @@
     "wallet"
   ],
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.14.0"
   },
   "dependencies": {
     "bfilter": "~2.4.0",
