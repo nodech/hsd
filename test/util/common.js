@@ -244,7 +244,7 @@ common.delayMethodOnce = function delayMethodOnce(obj, prop, n) {
     await common.sleep(n);
 
     try {
-      return bak.call(obj, ...args);
+      return bak.call(this, ...args);
     } finally {
       obj[prop] = bak;
     }
