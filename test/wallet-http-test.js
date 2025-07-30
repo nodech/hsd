@@ -40,7 +40,7 @@ const delayMethod2error = {
 
   // If we delay finalize (After fill), abort
   // will happen once before we reach sendMTX.
-  'finalize': 'Client closed connection.'
+  'finalize': 'Send was aborted.'
 };
 
 describe('Wallet HTTP', function() {
@@ -529,6 +529,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -893,6 +895,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -995,6 +999,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -1309,7 +1315,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
-        await sleep(TIMEOUT_FULL);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -1407,7 +1414,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
-        await sleep(TIMEOUT_FULL);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -1783,6 +1791,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -1915,6 +1925,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -2062,6 +2074,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -2172,6 +2186,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -2320,6 +2336,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -2467,6 +2485,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
@@ -2594,6 +2614,8 @@ describe('Wallet HTTP', function() {
 
         assert(wnodeError);
         assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
 
         const pending = await wallet.getPending();
         assert.strictEqual(pending.length - prePending.length, 0);
