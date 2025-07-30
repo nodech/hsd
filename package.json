@@ -1,6 +1,6 @@
 {
   "name": "hsd",
-  "version": "8.99.0",
+  "version": "8.0.0-nb.0.0.0",
   "description": "Cryptocurrency bike-shed",
   "license": "MIT",
   "repository": "git://github.com/handshake-org/hsd.git",
@@ -17,7 +17,7 @@
     "wallet"
   ],
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.14.0"
   },
   "dependencies": {
     "bfilter": "~2.4.0",

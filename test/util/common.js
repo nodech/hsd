@@ -237,6 +237,20 @@ common.enableLogger = () => {
   Logger.global.closed = false;
 };
 
+common.delayMethodOnce = function delayMethodOnce(obj, prop, n) {
+  const bak = obj[prop];
+
+  obj[prop] = async function(...args) {
+    await common.sleep(n);
+
+    try {
+      return bak.call(this, ...args);
+    } finally {
+      obj[prop] = bak;
+    }
+  };
+};
+
 function parseUndo(data) {
   const br = bio.read(data);
   const items = [];

@@ -175,14 +175,18 @@ class NodeContext {
     return this.chain.tip.height;
   }
 
-  get wdb() {
+  get wnode() {
     if (!this.options.wallet)
       return null;
 
     if (this.walletNode)
-      return this.walletNode.wdb;
+      return this.walletNode;
 
-    return this.node.get('walletdb').wdb;
+    return this.node.get('walletdb');
+  }
+
+  get wdb() {
+    return this.wnode?.wdb;
   }
 
   /*
