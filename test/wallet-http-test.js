@@ -7,6 +7,8 @@ const {Resource} = require('../lib/dns/resource');
 const Address = require('../lib/primitives/address');
 const Output = require('../lib/primitives/output');
 const HD = require('../lib/hd/hd');
+const Outpoint = require('../lib/primitives/outpoint');
+const consensus = require('../lib/protocol/consensus');
 const Mnemonic = require('../lib/hd/mnemonic');
 const rules = require('../lib/covenants/rules');
 const {types} = rules;
@@ -15,11 +17,9 @@ const network = Network.get('regtest');
 const assert = require('bsert');
 const {BufferSet} = require('buffer-map');
 const util = require('../lib/utils/util');
-const common = require('./util/common');
-const Outpoint = require('../lib/primitives/outpoint');
-const consensus = require('../lib/protocol/consensus');
 const NodeContext = require('./util/node-context');
-const {forEvent, sleep} = require('./util/common');
+const common = require('./util/common');
+const {forEvent, sleep, delayMethodOnce} = common;
 const {generateInitialBlocks} = require('./util/pagination');
 
 const {
@@ -28,6 +28,20 @@ const {
   revealPeriod,
   transferLockup
 } = network.names;
+
+const TIMEOUT = 100;
+const TIMEOUT_METHOD = 110;
+const TIMEOUT_FULL = 150;
+
+const delayMethod2error = {
+  // If we delay execution of fill until client closes,
+  // coin selection will get aborted.
+  'fill': 'Coin selection aborted.',
+
+  // If we delay finalize (After fill), abort
+  // will happen once before we reach sendMTX.
+  'finalize': 'Send was aborted.'
+};
 
 describe('Wallet HTTP', function() {
   this.timeout(20000);
@@ -263,6 +277,122 @@ describe('Wallet HTTP', function() {
       assert.equal(0, key.branch);
       assert.equal(0, key.index);
     });
+
+    it('should get new receive address (increments depth)', async () => {
+      const acct = await wallet.getAccount('default');
+      const recvDepth = acct.receiveDepth;
+
+      const addr = await wallet.createAddress('default');
+      assert.strictEqual(addr.index, recvDepth);
+
+      const addr2 = await wallet.createAddress('default');
+      assert.strictEqual(addr2.index, recvDepth + 1);
+
+      {
+        const acct = await wallet.getAccount('default');
+        const newRecvDepth = acct.receiveDepth;
+        assert.strictEqual(newRecvDepth, recvDepth + 2);
+      }
+    });
+
+    it('should get new change address (increments depth)', async () => {
+      const acct = await wallet.getAccount('default');
+      const changeDepth = acct.changeDepth;
+
+      const addr = await wallet.createChange('default');
+      assert.strictEqual(addr.index, changeDepth);
+
+      const addr2 = await wallet.createChange('default');
+      assert.strictEqual(addr2.index, changeDepth + 1);
+
+      {
+        const acct = await wallet.getAccount('default');
+        const newRecvDepth = acct.changeDepth;
+        assert.strictEqual(newRecvDepth, changeDepth + 2);
+      }
+    });
+
+    it('should get receive address w/o incrementing', async () => {
+      const account = await wallet.getAccount('default');
+      const lastRecv = await wallet.createAddress('default');
+
+      {
+        const addr = await wallet.getAddress('default', account.receiveDepth - 1);
+        assert.strictEqual(addr.address, account.receiveAddress);
+      }
+
+      {
+        const addr = await wallet.getAddress('default', account.receiveDepth);
+        assert.strictEqual(addr.address, lastRecv.address);
+      }
+
+      {
+        const addr = await wallet.getAddress('default', account.receiveDepth + 1);
+        assert.strictEqual(addr.index, account.receiveDepth + 1);
+      }
+
+      {
+        const addr = await wallet.getAddress('default',
+          account.receiveDepth + account.lookahead, true);
+        assert.strictEqual(addr.index, account.receiveDepth + account.lookahead);
+      }
+
+      {
+        const account = await wallet.getAccount('default');
+
+        let err = null;
+        try {
+          await wallet.getAddress('default',
+            account.receiveDepth + account.lookahead + 1, true);
+        } catch (e) {
+          err = e;
+        }
+
+        assert(err);
+        assert.strictEqual(err.message, 'Receive index out of bounds.');
+      }
+    });
+
+    it('should get change address w/o incrementing', async () => {
+      const account = await wallet.getAccount('default');
+      const lastChange = await wallet.createChange('default');
+
+      {
+        const addr = await wallet.getChange('default', account.changeDepth - 1);
+        assert.strictEqual(addr.address, account.changeAddress);
+      }
+
+      {
+        const addr = await wallet.getChange('default', account.changeDepth);
+        assert.strictEqual(addr.address, lastChange.address);
+      }
+
+      {
+        const addr = await wallet.getChange('default', account.changeDepth + 1);
+        assert.strictEqual(addr.index, account.changeDepth + 1);
+      }
+
+      {
+        const addr = await wallet.getChange('default',
+          account.changeDepth + account.lookahead, true);
+        assert.strictEqual(addr.index, account.changeDepth + account.lookahead);
+      }
+
+      {
+        const account = await wallet.getAccount('default');
+
+        let err = null;
+        try {
+          await wallet.getChange('default',
+            account.changeDepth + account.lookahead + 1, true);
+        } catch (e) {
+          err = e;
+        }
+
+        assert(err);
+        assert.strictEqual(err.message, 'Change index out of bounds.');
+      }
+    });
   });
 
   describe('Mine/Fund', function() {
@@ -337,13 +467,19 @@ describe('Wallet HTTP', function() {
   });
 
   describe('Create/Send transaction', function() {
-    let wallet2;
+    let wclientTimeout, walletTimeout, wallet2;
 
     before(async () => {
       await beforeAll();
       await nodeCtx.mineBlocks(20, cbAddress);
-      await wclient.createWallet('secondary');
-      wallet2 = wclient.wallet('secondary');
+      wclientTimeout = nodeCtx.walletClient({
+        timeout: TIMEOUT
+      });
+
+      walletTimeout = wclientTimeout.wallet('primary');
+
+      await wclientTimeout.createWallet('secondary');
+      wallet2 = wclientTimeout.wallet('secondary');
     });
 
     after(afterAll);
@@ -478,6 +614,42 @@ describe('Wallet HTTP', function() {
       for (const [i, output] of tx.outputs.entries()) {
         assert.equal(output.value, mtx.outputs[i].value);
         assert.equal(output.address, mtx.outputs[i].address.toString(network));
+      }
+    });
+
+    it('should abort tx if client is closed', async () => {
+      const {address} = await wallet.createChange('default');
+      const output = { address, value: 1e6 };
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.send({
+            abortOnClose: true,
+            outputs: [output]
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
       }
     });
 
@@ -632,13 +804,19 @@ describe('Wallet HTTP', function() {
   describe('Wallet auction (Integration)', function() {
     const accountTwo = 'foobar';
 
-    let name, wallet2;
+    let name, wallet2, walletTimeout;
 
     const ownedNames = [];
     const allNames = [];
 
     before(async () => {
       await beforeAll();
+
+      const wclientTimeout = nodeCtx.walletClient({
+        timeout: TIMEOUT
+      });
+
+      walletTimeout = wclientTimeout.wallet('primary');
 
       await nodeCtx.mineBlocks(20, cbAddress);
       await wallet.createAccount(accountTwo);
@@ -808,6 +986,39 @@ describe('Wallet HTTP', function() {
       await assert.rejects(fn, {message: /Not enough funds./});
     });
 
+    it('should abort open if client is closed', async () => {
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createOpen({
+            name: name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should mine to the account with no monies', async () => {
       const height = 5;
 
@@ -871,6 +1082,45 @@ describe('Wallet HTTP', function() {
 
       // blind is type string, so 32 * 2
       assert.equal(blind.length, 32 * 2);
+    });
+
+    it('should abort bid if client is closed', async () => {
+      await wallet.createOpen({ name });
+      allNames.push(name);
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createBid({
+            name: name,
+            bid: 1000,
+            lockup: 2000,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
     });
 
     it('should be able to get nonce', async () => {
@@ -1135,6 +1385,60 @@ describe('Wallet HTTP', function() {
       assert.equal(reveals.length, 1);
     });
 
+    it('should abort reveal if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      const {info} = await nclient.execute('getnameinfo', [name]);
+      assert.equal(info.name, name);
+      assert.equal(info.state, 'REVEAL');
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createReveal({
+            name: name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should create all reveals', async () => {
       await wallet.createOpen({
         name: name
@@ -1177,6 +1481,61 @@ describe('Wallet HTTP', function() {
       assert.strictEqual(revealsByName.length, 3);
       assert.ok(revealsByName.every(reveal => reveal.name === name));
       assert.ok(revealsByName.every(reveal => reveal.height === nodeCtx.height));
+    });
+
+    it('should abort reveal all if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      for (let i = 0; i < 3; i++) {
+        await wallet.createBid({
+          name: name,
+          bid: 1000,
+          lockup: 2000
+        });
+      }
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      const {info} = await nclient.execute('getnameinfo', [name]);
+      assert.equal(info.name, name);
+      assert.equal(info.state, 'REVEAL');
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createReveal({
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
     });
 
     it('should get all reveals (single player)', async () => {
@@ -1489,6 +1848,73 @@ describe('Wallet HTTP', function() {
       assert.ok(redeem.length > 0);
     });
 
+    it('should abort redeem if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      // wallet2 wins the auction, wallet can submit redeem
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await wallet2.createBid({
+        name: name,
+        bid: 2000,
+        lockup: 3000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await wallet2.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createRedeem({
+            name: name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should create an update', async () => {
       await wallet.createOpen({
         name: name
@@ -1553,6 +1979,73 @@ describe('Wallet HTTP', function() {
         // update after register or update
         const updates = json.outputs.filter(({covenant}) => covenant.type === types.UPDATE);
         assert.equal(updates.length, 1);
+      }
+    });
+
+    it('should abort update if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      // Confirmed REVEAL with highest bid makes wallet the owner
+      ownedNames.push(name);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createUpdate({
+            name: name,
+            data: {
+              records: [
+                {
+                  type: 'TXT',
+                  txt: ['foobar']
+                }
+              ]
+            },
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
       }
     });
 
@@ -1630,6 +2123,81 @@ describe('Wallet HTTP', function() {
       assert.equal(updates.length, 1);
     });
 
+    it('should abort renewal if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      // Confirmed REVEAL with highest bid makes wallet the owner
+      ownedNames.push(name);
+
+      await wallet.createUpdate({
+        name: name,
+        data: {
+          records: [
+            {
+              type: 'TXT',
+              txt: ['foobar']
+            }
+          ]
+        }
+      });
+
+      // mine up to the earliest point in which a renewal
+      // can be submitted, a treeInterval into the future
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createRenewal({
+            name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should create a transfer', async () => {
       await wallet.createOpen({
         name: name
@@ -1680,6 +2248,66 @@ describe('Wallet HTTP', function() {
 
       const xfer = json.outputs.filter(({covenant}) => covenant.type === types.TRANSFER);
       assert.equal(xfer.length, 1);
+    });
+
+    it('should abort on transfer if client is closed', async () => {
+      await wallet.createOpen({ name });
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({ name });
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      ownedNames.push(name);
+
+      await wallet.createUpdate({
+        name: name,
+        data: { records: [] }
+      });
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const { receiveAddress } = await wallet.getAccount(accountTwo);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createTransfer({
+            name,
+            address: receiveAddress,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
     });
 
     it('should create a finalize', async () => {
@@ -1750,6 +2378,88 @@ describe('Wallet HTTP', function() {
       assert.equal(coin.address, receiveAddress);
     });
 
+    it('should abort finalize if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      // Confirmed REVEAL with highest bid makes wallet the owner
+      ownedNames.push(name);
+
+      await wallet.createUpdate({
+        name: name,
+        data: {
+          records: [
+            {
+              type: 'TXT',
+              txt: ['foobar']
+            }
+          ]
+        }
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const {receiveAddress} = await wallet2.getAccount('default');
+
+      await wallet.createTransfer({
+        name,
+        address: receiveAddress
+      });
+
+      await nodeCtx.mineBlocks(transferLockup + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createFinalize({
+            name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should create a cancel', async () => {
       await wallet.createOpen({
         name: name
@@ -1817,6 +2527,88 @@ describe('Wallet HTTP', function() {
       assert.ok(keyInfo);
     });
 
+    it('should abort cancel if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      // Confirmed REVEAL with highest bid makes wallet the owner
+      ownedNames.push(name);
+
+      await wallet.createUpdate({
+        name: name,
+        data: {
+          records: [
+            {
+              type: 'TXT',
+              txt: ['foobar']
+            }
+          ]
+        }
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const {receiveAddress} = await wallet.getAccount(accountTwo);
+
+      await wallet.createTransfer({
+        name,
+        address: receiveAddress
+      });
+
+      await nodeCtx.mineBlocks(transferLockup + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createCancel({
+            name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
+    });
+
     it('should create a revoke', async () => {
       await wallet.createOpen({
         name: name
@@ -1871,6 +2663,79 @@ describe('Wallet HTTP', function() {
       const ns = await nclient.execute('getnameinfo', [name]);
       assert.equal(ns.info.name, name);
       assert.equal(ns.info.state, 'REVOKED');
+    });
+
+    it('should abort revoke if client is closed', async () => {
+      await wallet.createOpen({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      // Confirmed OPEN adds name to wallet's namemap
+      allNames.push(name);
+
+      await wallet.createBid({
+        name: name,
+        bid: 1000,
+        lockup: 2000
+      });
+
+      await nodeCtx.mineBlocks(biddingPeriod + 1, cbAddress);
+
+      await wallet.createReveal({
+        name: name
+      });
+
+      await nodeCtx.mineBlocks(revealPeriod + 1, cbAddress);
+
+      // Confirmed REVEAL with highest bid makes wallet the owner
+      ownedNames.push(name);
+
+      await wallet.createUpdate({
+        name: name,
+        data: {
+          records: [
+            {
+              type: 'TXT',
+              txt: ['foobar']
+            }
+          ]
+        }
+      });
+
+      await nodeCtx.mineBlocks(treeInterval + 1, cbAddress);
+
+      const prePending = await wallet.getPending();
+
+      for (const [delayMethodName, errorMessage] of Object.entries(delayMethod2error)) {
+        delayMethodOnce(nodeCtx.wdb.primary, delayMethodName, TIMEOUT_METHOD);
+
+        let wnodeError = null;
+        nodeCtx.wnode.once('error', e => wnodeError = e);
+
+        let err;
+        try {
+          await walletTimeout.createRevoke({
+            name,
+            abortOnClose: true
+          });
+        } catch (e) {
+          err = e;
+        }
+
+        assert.ok(err);
+        assert.strictEqual(err.message, 'Request timed out.');
+        await sleep(TIMEOUT_FULL);
+
+        assert(wnodeError);
+        assert.strictEqual(wnodeError.message, errorMessage);
+        assert.strictEqual(wnodeError.name, 'AbortError');
+        assert.strictEqual(wnodeError.cause.message, 'Client closed connection.');
+
+        const pending = await wallet.getPending();
+        assert.strictEqual(pending.length - prePending.length, 0);
+      }
     });
 
     it('should require passphrase for auction TXs', async () => {
