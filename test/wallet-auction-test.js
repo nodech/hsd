@@ -15,7 +15,7 @@ const Output = require('../lib/primitives/output');
 const Coin = require('../lib/primitives/coin');
 const Covenant = require('../lib/primitives/covenant');
 const {Resource} = require('../lib/dns/resource');
-const {forEvent} = require('./util/common');
+const {forEvent, delayMethodOnce} = require('./util/common');
 
 /** @typedef {import('../lib/wallet/wallet')} Wallet */
 
@@ -1002,6 +1002,65 @@ describe('Wallet Auction', function() {
       });
 
       assert.strictEqual(mtx.outputs.length, 3);
+    });
+
+    it('should not broadcast tx if client is signal is aborted', async () => {
+      const controller = new AbortController();
+      delayMethodOnce(wallet, 'finalize', 100);
+
+      setTimeout(() => {
+        controller.abort(new Error('Aborted by user.'));
+      }, 90);
+
+      let err;
+      try {
+        await wallet.sendBatch(
+          [
+            { type: 'OPEN', args: [name1] },
+            { type: 'OPEN', args: [name2] },
+            { type: 'OPEN', args: [name3] }
+          ],
+          {
+            signal: controller.signal
+          }
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      assert(err);
+      assert.strictEqual(err.message, 'Send was aborted.');
+      assert.strictEqual(err.name, 'AbortError');
+      assert.strictEqual(err.cause.message, 'Aborted by user.');
+    });
+
+    it('should abort coin selection for tx if client is signal is aborted', async () => {
+      const controller = new AbortController();
+      delayMethodOnce(wallet, 'fill', 100);
+
+      setTimeout(() => {
+        controller.abort(new Error('Aborted by user.'));
+      }, 90);
+      let err;
+      try {
+        await wallet.sendBatch(
+          [
+            { type: 'OPEN', args: [name1] },
+            { type: 'OPEN', args: [name2] },
+            { type: 'OPEN', args: [name3] }
+          ],
+          {
+            signal: controller.signal
+          }
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      assert(err);
+      assert.strictEqual(err.message, 'Coin selection aborted.');
+      assert.strictEqual(err.name, 'AbortError');
+      assert.strictEqual(err.cause.message, 'Aborted by user.');
     });
 
     describe('Complete auction and diverse-action batches', function() {
