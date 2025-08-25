@@ -1063,6 +1063,75 @@ describe('Wallet Auction', function() {
       assert.strictEqual(err.cause.message, 'Aborted by user.');
     });
 
+    describe('maxOutputs config', function() {
+      it('should fail if max outputs is incorrect', async () => {
+        const actions = [
+          { type: 'OPEN', args: [name1] },
+          { type: 'OPEN', args: [name2] },
+          { type: 'OPEN', args: [name3] }
+        ];
+
+        await assert.rejects(wallet.createBatch(actions, {
+          maxOutputs: -1
+        }), {
+          message: 'maxOutputs must be non-negative.'
+        });
+
+        await assert.rejects(wallet.createBatch(actions, {
+          maxOutputs: -1,
+          partialFailure: true
+        }), {
+          message: 'maxOutputs must be non-negative.'
+        });
+      });
+
+      it('should create batch if maxOutputs is within limits', async () => {
+        const actions = [
+          { type: 'OPEN', args: [name1] },
+          { type: 'OPEN', args: [name2] }
+        ];
+
+        const {mtx, errors} = await wallet.createBatch(actions, {
+          maxOutputs: 2
+        });
+
+        // +1 for change.
+        assert.strictEqual(mtx.outputs.length, 2 + 1);
+        assert.strictEqual(errors.length, 0);
+      });
+
+      it('should fail if maxOutputs is exceeded', async () => {
+        const actions = [
+          { type: 'OPEN', args: [name1] },
+          { type: 'OPEN', args: [name2] },
+          { type: 'OPEN', args: [name3] }
+        ];
+
+        await assert.rejects(wallet.createBatch(actions, {
+          maxOutputs: 2
+        }), {
+          message: 'Too many outputs, limit: 2.'
+        });
+      });
+
+      it('should only fail over the limit actions', async () => {
+        const actions = [
+          { type: 'OPEN', args: [name1] },
+          { type: 'OPEN', args: [name2] },
+          { type: 'OPEN', args: [name3] }
+        ];
+
+        const {mtx, errors} = await wallet.createBatch(actions, {
+          maxOutputs: 2,
+          partialFailure: true
+        });
+
+        assert.strictEqual(mtx.outputs.length, 3);
+        assert.strictEqual(errors.length, 1);
+        assert.strictEqual(errors[0].message, 'Too many outputs, limit: 2.');
+      });
+    });
+
     describe('Complete auction and diverse-action batches', function() {
       const addr = Address.fromProgram(0, Buffer.alloc(20, 0x01)).toString('regtest');
 
@@ -1101,6 +1170,27 @@ describe('Wallet Auction', function() {
         assert(uniqueAddrs(tx));
         assert.strictEqual(errors.length, 3);
         await mineBlocks(biddingPeriod);
+      });
+
+      it('should fail REVEAL all if outputs exceed maxOutputs', async () => {
+        const actions = [
+          { type: 'REVEAL' }
+        ];
+
+        await assert.rejects(wallet.createBatch(actions, {
+          maxOutputs: 2
+        }), {
+          message: 'Too many outputs, limit: 2.'
+        });
+
+        const {mtx, errors} = await wallet.createBatch(actions, {
+          maxOutputs: 2,
+          partialFailure: true
+        });
+
+        assert.strictEqual(mtx, null);
+        assert.strictEqual(errors.length, 1);
+        assert.strictEqual(errors[0].message, 'Too many outputs, limit: 2.');
       });
 
       it('REVEAL all', async () => {
