@@ -1548,6 +1548,25 @@ describe('Wallet Auction', function() {
         );
       });
 
+      it('should stop batching after OPENs reach the LIMIT', async () => {
+        const batch = [];
+        for (let i = 0; i < consensus.MAX_BLOCK_OPENS + 10; i++)
+          batch.push({ type: 'OPEN', args: [names[i]], id: names[i] });
+
+        const {mtx, errors} = await wallet.createBatch(batch, {
+          partialFailure: true
+        });
+
+        // +1 for change address.
+        assert.strictEqual(mtx.outputs.length, consensus.MAX_BLOCK_OPENS + 1);
+        assert.strictEqual(errors.length, 10);
+
+        for (const [i, err] of errors.entries()) {
+          assert.strictEqual(err.message, 'Too many OPENs.');
+          assert.strictEqual(err.id, names[consensus.MAX_BLOCK_OPENS + i]);
+        }
+      });
+
       it('should send batches of OPENs in sequential blocks', async () => {
         let count = 0;
         for (let i = 1; i <= 8; i++) {
@@ -1658,6 +1677,30 @@ describe('Wallet Auction', function() {
         );
       });
 
+      it('should stop batching after UPDATEs reach the LIMIT', async () => {
+        const batch = [];
+        for (let i = 0; i < consensus.MAX_BLOCK_UPDATES + 10; i++) {
+          batch.push({
+            type: 'UPDATE',
+            args: [names[i], EMPTY_RESOURCE],
+            id: names[i]
+          });
+        }
+
+        const {mtx, errors} = await wallet.createBatch(batch, {
+          partialFailure: true
+        });
+
+        // +1 for change address.
+        assert.strictEqual(mtx.outputs.length, consensus.MAX_BLOCK_UPDATES + 1);
+        assert.strictEqual(errors.length, 10);
+
+        for (const [i, err] of errors.entries()) {
+          assert.strictEqual(err.message, 'Too many UPDATEs.');
+          assert.strictEqual(err.id, names[consensus.MAX_BLOCK_UPDATES + i]);
+        }
+      });
+
       it('should not RENEW any names too early', async () => {
         await mineBlocks(
           ((network.names.renewalWindow / 8) * 7)
@@ -1685,6 +1728,30 @@ describe('Wallet Auction', function() {
           wallet.createBatch(batch),
           {message: 'Too many RENEWs.'} // Might exceed wallet lookahead also
         );
+      });
+
+      it('should stop batching after RENEWs reach the LIMIT', async () => {
+        const batch = [];
+        for (let i = 0; i < consensus.MAX_BLOCK_RENEWALS + 10; i++) {
+          batch.push({
+            type: 'RENEW',
+            args: [names[i]],
+            id: names[i]
+          });
+        }
+
+        const {mtx, errors} = await wallet.createBatch(batch, {
+          partialFailure: true
+        });
+
+        // +1 for change address.
+        assert.strictEqual(mtx.outputs.length, consensus.MAX_BLOCK_RENEWALS + 1);
+        assert.strictEqual(errors.length, 10);
+
+        for (const [i, err] of errors.entries()) {
+          assert.strictEqual(err.message, 'Too many RENEWs.');
+          assert.strictEqual(err.id, names[consensus.MAX_BLOCK_RENEWALS + i]);
+        }
       });
 
       it('should send all the batches of RENEWs it needs to', async () => {
@@ -1722,6 +1789,30 @@ describe('Wallet Auction', function() {
           wallet.createBatch(batch),
           {message: 'Too many UPDATEs.'} // Might exceed wallet lookahead also
         );
+      });
+
+      it('should stop batching TRANSFERs reach the LIMIT (UPDATE)', async () => {
+        const batch = [];
+        for (const name of names) {
+          batch.push({
+            type: 'TRANSFER',
+            args: [name, new Address()],
+            id: name
+          });
+        }
+
+        const {mtx, errors} = await wallet.createBatch(batch, {
+          partialFailure: true
+        });
+
+        // +1 for change address.
+        assert.strictEqual(mtx.outputs.length, consensus.MAX_BLOCK_UPDATES + 1);
+        assert.strictEqual(errors.length, names.length - consensus.MAX_BLOCK_UPDATES);
+
+        for (const [i, err] of errors.entries()) {
+          assert.strictEqual(err.message, 'Too many UPDATEs.');
+          assert.strictEqual(err.id, names[consensus.MAX_BLOCK_UPDATES + i]);
+        }
       });
 
       it('should send batches of TRANSFERs', async () => {
