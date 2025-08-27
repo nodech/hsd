@@ -648,7 +648,7 @@ describe('Wallet Auction', function() {
 
   describe('Batch TXs', function() {
     /** @type {Wallet} */
-    let wallet;
+    let wallet, wallet2;
     let receive;
     const hardFee = 12345;
 
@@ -657,11 +657,18 @@ describe('Wallet Auction', function() {
     const name3 = rules.grindName(5, 0, network);
     const name4 = rules.grindName(6, 0, network);
     const name5 = rules.grindName(7, 0, network);
+    // used for FINISH test.
+    const name6 = rules.grindName(7, 0, network); // only REGISTER
+    const name7 = rules.grindName(7, 0, network); // only REDEEM
+    const name8 = rules.grindName(7, 0, network); // BOTH
 
     const res1 = Resource.fromJSON({records: [{type: 'TXT', txt: ['one']}]}).encode();
     const res2 = Resource.fromJSON({records: [{type: 'TXT', txt: ['two']}]}).encode();
     const res3 = Resource.fromJSON({records: [{type: 'TXT', txt: ['three']}]}).encode();
     const res4 = Resource.fromJSON({records: [{type: 'TXT', txt: ['four']}]}).encode();
+    const res6 = Resource.fromJSON({records: [{type: 'TXT', txt: ['six']}]}).encode();
+    const res7 = Resource.fromJSON({records: [{type: 'TXT', txt: ['seven']}]}).encode();
+    const res8 = Resource.fromJSON({records: [{type: 'TXT', txt: ['eight']}]}).encode();
 
     const mempool = [];
     wdb.send = (tx) => {
@@ -697,11 +704,22 @@ describe('Wallet Auction', function() {
     before(async () => {
       // Create wallet
       wallet = await wdb.create();
+      wallet2 = await wdb.create({
+        id: 'wallet2'
+      });
+
       receive = await wallet.receiveAddress();
       mempool.length = 0;
 
       // Fund wallet
       await mineBlocks(20);
+
+      await wallet.send({
+        outputs: [{
+          address: await wallet2.receiveAddress(),
+          value: 1e6
+        }]
+      });
 
       // Verify funds
       const bal = await wallet.getBalance();
@@ -1135,12 +1153,15 @@ describe('Wallet Auction', function() {
     describe('Complete auction and diverse-action batches', function() {
       const addr = Address.fromProgram(0, Buffer.alloc(20, 0x01)).toString('regtest');
 
-      it('3 OPENs and 1 NONE', async () => {
+      it('5 OPENs and 1 NONE', async () => {
         const {tx, errors} = await wallet.sendBatch(
           [
             { type: 'OPEN', args: [name1] },
             { type: 'OPEN', args: [name2] },
             { type: 'OPEN', args: [name3] },
+            { type: 'OPEN', args: [name6] },
+            { type: 'OPEN', args: [name7] },
+            { type: 'OPEN', args: [name8] },
             { type: 'NONE', args: [addr, 10000] }
           ]
         );
@@ -1150,13 +1171,23 @@ describe('Wallet Auction', function() {
         await mineBlocks(treeInterval + 1);
       });
 
-      it('4 BIDs', async () => {
+      it('9 BIDs', async () => {
         const {tx, errors} = await wallet.sendBatch(
           [
             { type: 'BID', args: [name1, 10000, 20000] },
             { type: 'BID', args: [name1, 10001, 20000] }, // self-snipe!
             { type: 'BID', args: [name2, 30000, 40000] },
             { type: 'BID', args: [name3, 50000, 60000] },
+            // FINISH tests
+            // only REG
+            { type: 'BID', args: [name6, 60000, 60000] },
+            // only REDEEM (must lose)
+            { type: 'BID', args: [name7, 70000, 70000] },
+            // 1 REGISTER 2 REDEEMS
+            { type: 'BID', args: [name8, 80000, 100000] },
+            { type: 'BID', args: [name8, 82000, 100000] },
+            { type: 'BID', args: [name8, 81000, 100000] },
+
             // Handle failed index increments.
             { type: 'BID', args: ['random', -100, -1]},
             { type: 'BID', args: ['random', -100, -1]},
@@ -1168,7 +1199,11 @@ describe('Wallet Auction', function() {
         );
 
         assert(uniqueAddrs(tx));
+        assert.strictEqual(tx.outputs.length, 9 + 1 + 1);
         assert.strictEqual(errors.length, 3);
+
+        await wallet2.sendBid(name7, 1e5, 1e5);
+
         await mineBlocks(biddingPeriod);
       });
 
@@ -1201,7 +1236,7 @@ describe('Wallet Auction', function() {
           ]
         );
 
-        assert.strictEqual(revealAll.outputs.length, 5);
+        assert.strictEqual(revealAll.outputs.length, 10);
         assert.strictEqual(errors.length, 0);
 
         let reveals = 0;
@@ -1209,7 +1244,7 @@ describe('Wallet Auction', function() {
           if (output.covenant.type === rules.types.REVEAL)
             reveals++;
         }
-        assert.strictEqual(reveals, 4);
+        assert.strictEqual(reveals, 9);
       });
 
       it('2 REVEALs then 1 REVEAL', async () => {
@@ -1226,10 +1261,18 @@ describe('Wallet Auction', function() {
         // No "could not resolve preferred inputs" error
         // because names are being revealed individually.
         await wallet.sendBatch(
-          [
-            { type: 'REVEAL', args: [name3] }
-          ]
+          [{ type: 'REVEAL', args: [name3] }]
         );
+
+        await wallet.sendBatch([
+          { type: 'REVEAL', args: [name6] },
+          { type: 'REVEAL', args: [name7] },
+          { type: 'REVEAL', args: [name8] }
+        ]);
+
+        const {tx: tx2, errors: errors2} = await wallet2.sendBatch([{ type: 'REVEAL' }]);
+        assert(tx2);
+        assert.strictEqual(errors2.length, 0);
         await mineBlocks(revealPeriod);
       });
 
@@ -1241,7 +1284,7 @@ describe('Wallet Auction', function() {
           ]
         );
 
-        assert.strictEqual(redeemAll.outputs.length, 2);
+        assert.strictEqual(redeemAll.outputs.length, 5);
         assert.strictEqual(errors.length, 0);
 
         let redeems = 0;
@@ -1249,7 +1292,59 @@ describe('Wallet Auction', function() {
           if (output.covenant.type === rules.types.REDEEM)
             redeems++;
         }
-        assert.strictEqual(redeems, 1);
+        assert.strictEqual(redeems, 4);
+      });
+
+      it('2 REGISTER 3 REDEEMS', async () => {
+        const {mtx, errors} = await wallet.createBatch([
+          { type: 'FINISH', args: [name6, res6] },
+          { type: 'FINISH', args: [name7, res7] },
+          { type: 'FINISH', args: [name8, res8] }
+        ]);
+
+        assert(mtx);
+        const allRedeems = mtx.outputs
+          .filter(o => o.covenant.type === rules.types.REDEEM).length;
+        const alLRegisters = mtx.outputs
+          .filter(o => o.covenant.type === rules.types.REGISTER).length;
+
+        assert.strictEqual(mtx.outputs.length, 6);
+        assert.strictEqual(errors.length, 0);
+        assert.strictEqual(allRedeems, 3);
+        assert.strictEqual(alLRegisters, 2);
+
+        // name6 only REG
+        assert.strictEqual(mtx.outputs[0].value, 0);
+        assert.strictEqual(mtx.outputs[0].covenant.type, rules.types.REGISTER);
+        assert.bufferEqual(mtx.outputs[0].covenant.items[0], rules.hashName(name6));
+        assert.bufferEqual(mtx.outputs[0].covenant.items[2], res6);
+
+        // name7 only redeem
+        assert.strictEqual(mtx.outputs[1].value, 70000);
+        assert.strictEqual(mtx.outputs[1].covenant.type, rules.types.REDEEM);
+        assert.bufferEqual(mtx.outputs[1].covenant.items[0], rules.hashName(name7));
+
+        // name8 - 2 redeems and 1 register
+        const name8outs = mtx.outputs.slice(2)
+          .filter(o => o.covenant.type !== rules.types.NONE);
+
+        const register = name8outs
+          .filter(o => o.covenant.type === rules.types.REGISTER);
+        const redeems = name8outs
+          .filter(o => o.covenant.type === rules.types.REDEEM)
+          .sort((a, b) => a.value - b.value);
+
+        assert.strictEqual(register.length, 1);
+        assert.strictEqual(register[0].value, 81000);
+        assert.bufferEqual(register[0].covenant.items[0], rules.hashName(name8));
+        assert.bufferEqual(register[0].covenant.items[2], res8);
+
+        assert.strictEqual(redeems.length, 2);
+        assert.strictEqual(redeems[0].value, 80000);
+        assert.bufferEqual(redeems[0].covenant.items[0], rules.hashName(name8));
+
+        assert.strictEqual(redeems[1].value, 81000);
+        assert.bufferEqual(redeems[1].covenant.items[0], rules.hashName(name8));
       });
 
       it('3 REGISTERs, 1 REDEEM and 1 OPEN', async () => {
