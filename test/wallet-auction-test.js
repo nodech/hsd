@@ -1047,7 +1047,7 @@ describe('Wallet Auction', function() {
       }
 
       assert(err);
-      assert.strictEqual(err.message, 'Send was aborted.');
+      assert.strictEqual(err.message, 'Send was aborted. (Error: Aborted by user.)');
       assert.strictEqual(err.name, 'AbortError');
       assert.strictEqual(err.cause.message, 'Aborted by user.');
     });
@@ -1076,7 +1076,7 @@ describe('Wallet Auction', function() {
       }
 
       assert(err);
-      assert.strictEqual(err.message, 'Coin selection aborted.');
+      assert.strictEqual(err.message, 'Coin selection aborted. (Error: Aborted by user.)');
       assert.strictEqual(err.name, 'AbortError');
       assert.strictEqual(err.cause.message, 'Aborted by user.');
     });
