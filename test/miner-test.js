@@ -101,7 +101,7 @@ describe('Miner', function() {
       mtx.addCoin(coin);
       mtx.addOutput(addr, value);
       mtx.addOutput(change, coin.value - value - fee);
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx = mtx.toTX();
       wallet.addTX(tx);
       txids.add(tx.hash());
@@ -145,7 +145,7 @@ describe('Miner', function() {
       mtx.addCoin(coin);
       mtx.addOutput(addr, value);
       mtx.addOutput(change, coin.value - value - fee);
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx = mtx.toTX();
       wallet.addTX(tx);
       txids.add(tx.hash());
