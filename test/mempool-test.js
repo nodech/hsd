@@ -170,7 +170,7 @@ describe('Mempool', function() {
       t1.inputs[0].witness = Witness.fromItems([sig, key.publicKey]);
 
       // balance: 51000
-      wallet.sign(t1);
+      await wallet.sign(t1);
 
       const t2 = new MTX();
       t2.addTX(t1, 0); // 50000
@@ -178,7 +178,7 @@ describe('Mempool', function() {
       t2.addOutput(wallet.getAddress(), 20000);
 
       // balance: 49000
-      wallet.sign(t2);
+      await wallet.sign(t2);
 
       const t3 = new MTX();
       t3.addTX(t1, 1); // 10000
@@ -186,7 +186,7 @@ describe('Mempool', function() {
       t3.addOutput(wallet.getAddress(), 23000);
 
       // balance: 47000
-      wallet.sign(t3);
+      await wallet.sign(t3);
 
       const t4 = new MTX();
       t4.addTX(t2, 1); // 24000
@@ -195,21 +195,21 @@ describe('Mempool', function() {
       t4.addOutput(wallet.getAddress(), 11000);
 
       // balance: 22000
-      wallet.sign(t4);
+      await wallet.sign(t4);
 
       const f1 = new MTX();
       f1.addTX(t4, 1); // 11000
       f1.addOutput(new Address(), 9000);
 
       // balance: 11000
-      wallet.sign(f1);
+      await wallet.sign(f1);
 
       const fake = new MTX();
       fake.addTX(t1, 1); // 1000 (already redeemed)
       fake.addOutput(wallet.getAddress(), 6000); // 6000 instead of 500
 
       // Script inputs but do not sign
-      wallet.template(fake);
+      await wallet.template(fake);
 
       // Fake signature
       const input = fake.inputs[0];
@@ -269,7 +269,7 @@ describe('Mempool', function() {
       mtx1.addOutput(wallet.getAddress(), 50000);
       mtx1.addCoin(dummyCoin);
 
-      wallet.sign(mtx1);
+      await wallet.sign(mtx1);
 
       const tx1 = mtx1.toTX();
       const coin1 = Coin.fromTX(tx1, 0, -1);
@@ -279,7 +279,7 @@ describe('Mempool', function() {
       mtx2.addOutput(wallet.getAddress(), 30000); // 10k fee
       mtx2.addCoin(coin1);
 
-      wallet.sign(mtx2);
+      await wallet.sign(mtx2);
 
       const tx2 = mtx2.toTX();
 
@@ -505,7 +505,7 @@ describe('Mempool', function() {
         )
       );
       mtx.addOutput(wallet.getAddress(), 0); // temp
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
 
       const vsize = mtx.getVirtualSize();
       const minFee = (vsize / 1000) * network.minRelay;
@@ -514,7 +514,7 @@ describe('Mempool', function() {
       // Revise with exactly absurd fee
       mtx.outputs[0].value = funds - absurdFee - 1;
       mtx.inputs[0].witness.items.length = 0;
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx1 = mtx.toTX();
 
       await assert.rejects(
@@ -525,7 +525,7 @@ describe('Mempool', function() {
       // Revise again with just under absurd fee
       mtx.outputs[0].value = funds - absurdFee;
       mtx.inputs[0].witness.items.length = 0;
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx2 = mtx.toTX();
 
       await mempool.addTX(tx2);
@@ -545,7 +545,7 @@ describe('Mempool', function() {
         )
       );
       mtx.addOutput(wallet.getAddress(), 0); // temp
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
 
       const vsize = mtx.getVirtualSize();
       const minFee = (vsize / 1000) * network.minRelay;
@@ -553,7 +553,7 @@ describe('Mempool', function() {
       // Revise with just under minFee
       mtx.outputs[0].value = funds - minFee + 1;
       mtx.inputs[0].witness.items.length = 0;
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx1 = mtx.toTX();
 
       await assert.rejects(
@@ -564,7 +564,7 @@ describe('Mempool', function() {
       // Revise again with exactly minFee
       mtx.outputs[0].value = funds - minFee;
       mtx.inputs[0].witness.items.length = 0;
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
       const tx2 = mtx.toTX();
 
       await mempool.addTX(tx2);
@@ -673,7 +673,7 @@ describe('Mempool', function() {
       const mtx1 = new MTX();
       mtx1.addCoin(coin1);
       mtx1.addOutput(addr, 90000);
-      chaincoins.sign(mtx1);
+      await chaincoins.sign(mtx1);
       const tx1 = mtx1.toTX();
       chaincoins.addTX(tx1);
       wallet.addTX(tx1);
@@ -696,7 +696,7 @@ describe('Mempool', function() {
       const mtx2 = new MTX();
       mtx2.addCoin(coin2);
       mtx2.addOutput(addr, 90000);
-      chaincoins.sign(mtx2);
+      await chaincoins.sign(mtx2);
       const tx2 = mtx2.toTX();
       chaincoins.addTX(tx2);
       wallet.addTX(tx2);
@@ -735,7 +735,7 @@ describe('Mempool', function() {
       const mtx1 = new MTX();
       mtx1.addCoin(coin1);
       mtx1.addOutput(addr, 90000);
-      chaincoins.sign(mtx1);
+      await chaincoins.sign(mtx1);
       const tx1 = mtx1.toTX();
       chaincoins.addTX(tx1);
       wallet.addTX(tx1);
@@ -744,7 +744,7 @@ describe('Mempool', function() {
       const mtx2 = new MTX();
       mtx2.addTX(tx1, 0);
       mtx2.addOutput(addr, 80000);
-      wallet.sign(mtx2);
+      await wallet.sign(mtx2);
       const tx2 = mtx2.toTX();
       chaincoins.addTX(tx2);
       wallet.addTX(tx2);
@@ -807,7 +807,7 @@ describe('Mempool', function() {
       let spend = new MTX();
       spend.addTX(cb, 0);
       spend.addOutput(addr, 90000);
-      chaincoins.sign(spend);
+      await chaincoins.sign(spend);
       spend = spend.toTX();
 
       // It's too early
@@ -882,7 +882,7 @@ describe('Mempool', function() {
       fund.addCoin(fundCoin);
       const addr = chaincoins.createReceive().getAddress();
       fund.addOutput(addr, 90000);
-      chaincoins.sign(fund);
+      await chaincoins.sign(fund);
       fund = fund.toTX();
       chaincoins.addTX(fund);
 
@@ -905,7 +905,7 @@ describe('Mempool', function() {
       spend.addOutput(addr, 70000);
       spend.inputs[0].sequence = 1;
       spend.version = 0;
-      chaincoins.sign(spend);
+      await chaincoins.sign(spend);
       spend = spend.toTX();
 
       // Valid spend into mempool
@@ -975,7 +975,7 @@ describe('Mempool', function() {
       const nameHash = rules.hashName(rawName);
       open.outputs[0].covenant.setOpen(nameHash, rawName);
 
-      chaincoins.sign(open);
+      await chaincoins.sign(open);
       open = open.toTX();
 
       // Add it to block and mempool
@@ -1010,7 +1010,7 @@ describe('Mempool', function() {
         Buffer.alloc(32, 0x01)
       );
 
-      chaincoins.sign(bid);
+      await chaincoins.sign(bid);
       bid = bid.toTX();
 
       // It's too early
@@ -1398,7 +1398,7 @@ describe('Mempool', function() {
         // Otherwise the new TX might be the one that gets evicted,
         // resulting in a "mempool full" error instead.
         mtx.addOutput(addr, 90000 - (10 * i));
-        chaincoins.sign(mtx);
+        await chaincoins.sign(mtx);
         const tx = mtx.toTX();
 
         expectedSize += txMemUsage;
@@ -1450,7 +1450,7 @@ describe('Mempool', function() {
           const mtx = new MTX();
           mtx.addCoin(coin);
           mtx.addOutput(addr, 90000);
-          chaincoins.sign(mtx);
+          await chaincoins.sign(mtx);
           const tx = mtx.toTX();
 
           sent.push(tx.hash());

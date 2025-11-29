@@ -252,7 +252,7 @@ describe('Chain', function() {
     mtx.addTX(cb, 0);
     mtx.addOutput(wallet.getAddress(), 10 * consensus.COIN);
 
-    wallet.sign(mtx);
+    await wallet.sign(mtx);
 
     const job = await cpu.createJob();
     assert(job.addTX(mtx.toTX(), mtx.view));
@@ -415,7 +415,7 @@ describe('Chain', function() {
     mtx.addTX(cb, 0);
     mtx.addOutput(wallet.getAddress(), 1000);
 
-    wallet.sign(mtx);
+    await wallet.sign(mtx);
 
     const job = await cpu.createJob();
     job.addTX(mtx.toTX(), mtx.view);
@@ -441,7 +441,7 @@ describe('Chain', function() {
       for (let j = 0; j < 15; j++)
         mtx.addOutput(wallet.getAddress(), 1);
 
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
 
       job.pushTX(mtx.toTX());
     }
@@ -466,7 +466,7 @@ describe('Chain', function() {
       for (let j = 0; j < 20; j++)
         mtx.addOutput(wallet.getAddress(), 1);
 
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
 
       job.pushTX(mtx.toTX());
     }
@@ -492,7 +492,7 @@ describe('Chain', function() {
       for (let j = 0; j < 14; j++)
         mtx.addOutput(wallet.getAddress(), 1);
 
-      wallet.sign(mtx);
+      await wallet.sign(mtx);
 
       if (i & 1)
         prove.push(mtx.hash());
@@ -536,7 +536,7 @@ describe('Chain', function() {
     mtx.addTX(cb, 0);
     mtx.addOutput(wallet.getAddress(), 1);
 
-    wallet.sign(mtx);
+    await wallet.sign(mtx);
 
     job.addTX(mtx.toTX(), mtx.view);
     job.refresh();
@@ -554,7 +554,7 @@ describe('Chain', function() {
     mtx.addTX(cb, 0);
     mtx.addOutput(wallet.getAddress(), cb.outputs[0].value + 1);
 
-    wallet.sign(mtx);
+    await wallet.sign(mtx);
 
     job.pushTX(mtx.toTX());
     job.refresh();
@@ -577,7 +577,7 @@ describe('Chain', function() {
     mtx.addOutput(wallet.getAddress(), value);
     mtx.addOutput(wallet.getAddress(), value);
 
-    wallet.sign(mtx);
+    await wallet.sign(mtx);
 
     job.pushTX(mtx.toTX());
     job.refresh();

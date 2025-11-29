@@ -1622,12 +1622,12 @@ class MemWallet {
 
   template(mtx) {
     const keys = this.deriveInputs(mtx);
-    mtx.template(keys);
+    return mtx.template(keys);
   }
 
-  sign(mtx) {
+  async sign(mtx) {
     const keys = this.deriveInputs(mtx);
-    mtx.template(keys);
+    await mtx.template(keys);
     mtx.sign(keys);
   }
 
@@ -1639,7 +1639,7 @@ class MemWallet {
     if (options && options.locktime != null)
       mtx.setLocktime(options.locktime);
 
-    this.sign(mtx);
+    await this.sign(mtx);
 
     if (!mtx.isSigned())
       throw new Error('Cannot sign tx.');
